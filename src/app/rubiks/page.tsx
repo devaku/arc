@@ -1,13 +1,13 @@
 'use client';
 // pages/camera.js
 import { useEffect, useRef, useState } from 'react';
-import useGetCamera from '../_components/hooks/useGetCamera';
+import useGetCamera from '@/hooks/useGetCamera';
 
 export default function CameraPage() {
-	const videoRef = useRef(null);
-	const canvasRef = useRef(null);
-	const [error, setError] = useState(null);
-	const [loading, setLoading] = useState(true);
+	const videoRef = useRef<HTMLVideoElement | null>(null);
+	const canvasRef = useRef<HTMLCanvasElement | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [loading, setLoading] = useState<boolean>(true);
 	const [rgb, setRgb] = useState();
 
 	const allowed = useGetCamera(videoRef, setLoading, setError);
@@ -46,7 +46,7 @@ export default function CameraPage() {
 				console.log(pixels);
 
 				// Analyze colors
-				const colorCount = {};
+				const colorCount: any = {};
 				for (let i = 0; i < pixels.length; i += 4) {
 					const r = pixels[i];
 					const g = pixels[i + 1];
@@ -60,7 +60,7 @@ export default function CameraPage() {
 
 				// Get the most frequent color
 				const dominantColor = Object.entries(colorCount).sort(
-					(a, b) => b[1] - a[1]
+					(a: any, b: any) => b[1] - a[1]
 				)[0]?.[0];
 				console.log('Dominant color:', dominantColor);
 			}
