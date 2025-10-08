@@ -9,6 +9,8 @@ export default function CameraPage() {
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+	const [scanningButton, setScanningButton] = useState<'Start Scanning' | 'Stop Scanning'>('Start Scanning');
+
 	const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 	const [error, setError] = useState<string | null>(null);
@@ -24,6 +26,7 @@ export default function CameraPage() {
 			.map(() => Array(3).fill('#FFFFFF'))
 	);
 	const [isSaved, setIsSaved] = useState<boolean>(false);
+	const [savedImages, setSavedImages] = useState<string[][][]>([]);
 
 	useGetCamera(videoRef, setLoading, setError);
 
@@ -177,6 +180,7 @@ export default function CameraPage() {
 	function handleStartClick() {
 		console.log('Color Processing Start');
 		startInterval();
+		setScanningButton('Stop Scanning');
 	}
 
 	function handleStopClick() {
@@ -187,6 +191,7 @@ export default function CameraPage() {
 				.map(() => Array(3).fill('#FFFFFF'))
 		);
 		stopInterval();
+		setScanningButton('Start Scanning');
 	}
 
 	function handleSaveClick() {
@@ -194,6 +199,9 @@ export default function CameraPage() {
 		setSavedColors(gridColors);
 		setIsSaved(true);
 		stopInterval();
+		
+		// Add current grid to savedImages array (create a deep copy)
+		setSavedImages(prev => [...prev, JSON.parse(JSON.stringify(gridColors))]);
 	}
 
 	function handleUnsaveClick() {
@@ -207,17 +215,25 @@ export default function CameraPage() {
 		startInterval();
 	}
 
+	function deleteSavedImage(index: number) {
+		console.log(`Deleting saved image at index ${index}`);
+		setSavedImages(prev => prev.filter((_, i) => i !== index));
+	}
+
 	return (
-		<div className="flex flex-col w-screen h-screen items-center bg-contain justify-items-center min-h-screen p-8 pb-20 gap-10 bg-[url(/images/dice-427897.jpg)] font-sans px-4">
+		<div className="flex font-sans flex-col w-screen h-full items-center font-io-regular bg-contain justify-items-center min-h-screen p-8 pb-20 gap-10 bg-[url(/images/dice-427897.jpg)] px-4">
 			{/* Persistent Icon (top-left corner) */}
 			<div className="fixed top-4 left-4 z-50">
-				<Image
-					src={Icon}
-					alt="ARC Solver Icon"
-					width={60}
-					height={60}
-					className="rounded-full border-2 border-black shadow-lg"
-				/>
+				<a href="/" title="Go to Home">
+					<Image
+						src={Icon}
+						alt="ARC Solver Icon"
+						width={100}
+						height={100}
+						className="rounded-full border-2 border-black shadow-lg"
+						priority
+					/>
+				</a>
 			</div>
 
 			{/* INFORMATION */}
@@ -230,14 +246,14 @@ export default function CameraPage() {
 			{/* Main Content */}
 			<div className="flex flex-row lg:flex-row justify-center items-start gap-8">
 				{/* Left Column - Camera Feed */}
-				<div className="flex flex-col flex-wrap items-center bg-red-500 border-10 border-y-red-600 border-x-red-400 p-4 rounded-lg shadow-lg">
-					<h2 className="text-4xl mb-2">Camera Feed</h2>
-					<div className="relative w-[500px] h-[500px]">
+				<div className="flex flex-col gap-5 flex-wrap items-center bg-red-500 border-10 border-y-red-600 border-x-red-400 p-4 rounded-lg shadow-lg">
+					<h2 className="text-4xl">Camera Feed</h2>
+					<div className="relative border-4 border-y-red-600 border-x-red-400 rounded-lg w-[500px] h-[500px]">
 						<video
 							ref={videoRef}
 							autoPlay
 							playsInline
-							className="w-full h-full rounded-md bg-black object-cover"
+							className="w-full h-full rounded-lg bg-black object-cover"
 						/>
 						<canvas
 							ref={canvasRef}
@@ -245,55 +261,94 @@ export default function CameraPage() {
 						/>
 					</div>
 					{/* BUTTONS */}
-					<div className="flex justify-center bg-transparent gap-2 mb-4">
-						<button
-							onClick={handleStartClick}
-							className="cursor-pointer p-2 rounded bg-green-500 text-black"
-						>
-							Start Scanning
-						</button>
-						<button
-							onClick={handleStopClick}
-							className="cursor-pointer p-2 rounded bg-red-500 text-white"
-						>
-							Stop Scanning
-						</button>
-						{!isSaved ? (
+					<div className="flex justify-center gap-5">
+						{scanningButton === "Start Scanning" ? (
 							<button
-								onClick={handleSaveClick}
-								className="cursor-pointer p-2 rounded bg-blue-500 text-white"
+								onClick={handleStartClick}
+								className="cursor-pointer w-35 p-2 rounded bg-green-500 border-5 border-y-green-600 border-x-green-400 text-white"
 							>
-								Save Colors
+								Start Scanning
 							</button>
 						) : (
 							<button
-								onClick={handleUnsaveClick}
-								className="cursor-pointer p-2 rounded bg-yellow-500 text-black"
+								onClick={handleStopClick}
+								className="cursor-pointer w-35 p-2 rounded bg-blue-500 border-5 border-y-blue-600 border-x-blue-400 text-white"
 							>
-								Unsave & Resume
+								Stop Scanning
 							</button>
+						)}
+						{scanningButton === "Stop Scanning" && (
+							!isSaved ? (
+								<button
+									onClick={handleSaveClick}
+									className="cursor-pointer w-35 p-2 rounded bg-yellow-500 border-5 border-y-yellow-600 border-x-yellow-400 text-white"
+								>
+									Save Colors
+								</button>
+							) : (
+								<button
+									onClick={handleUnsaveClick}
+									className="cursor-pointer w-35 p-2 rounded bg-yellow-500 border-5 border-y-yellow-600 border-x-yellow-400 text-white"
+							>
+								Resume
+							</button>
+							)
 						)}
 					</div>
 				</div>
 
 				{/* Right Column - 3x3 Color Grid */}
-				<div className="flex flex-col items-center bg-blue-500 border-10 border-y-blue-600 border-x-blue-400 p-4 rounded-lg min-w-fit shadow-lg">
-					<h2 className="text-4xl mb-2">
+				<div className="flex flex-col items-center bg-blue-500 border-10 border-y-blue-600 border-x-blue-400 p-4 gap-4 rounded-lg min-w-fit shadow-lg">
+					<h2 className="text-4xl">
 						{isSaved ? 'Saved Colors' : 'Detected Colors'}
 					</h2>
-					<div className="grid grid-cols-3 gap-2 p-2 min-w-fit border-2 border-black bg-black rounded-lg">
+					<div className="grid grid-cols-3 gap-2 p-2 min-w-fit border-4 border-y-blue-600 border-x-blue-400 bg-white rounded-lg">
 						{(isSaved ? savedColors : gridColors).map(
 							(row, rowIndex) =>
 								row.map((color, colIndex) => (
 									<div
 										key={`${rowIndex}-${colIndex}`}
 										style={{ backgroundColor: color }}
-										className="w-24 h-24 border-2 border-blue-500 rounded-2xl"
+										className="w-24 h-24 border-2 border-black-500 rounded-2xl"
 										title={color}
 									/>
 								))
 						)}
 					</div>
+					{/* A library of saved photos */}
+						<h2 className='text-4xl'>
+							Gallery
+						</h2>
+						{/* Future feature: Gallery of saved images */}
+						<div className='w-fit h-fit bg-white border-4 border-y-blue-600 border-x-blue-400 rounded-lg p-2 mx-auto'>
+							{savedImages.length === 0 ? (
+								<p className='text-gray-600 max-w-50 text-center'>No saved grids yet. Press "Save Colors" to add grids to your gallery!</p>
+							) : (
+								<div className='grid grid-cols-3 gap-2'>
+									{savedImages.map((image, index) => (
+									<button 
+										key={index} 
+										onClick={() => deleteSavedImage(index)}
+										className='border-2 border-gray-400 rounded-lg p-1 bg-black hover:bg-red-500 hover:border-red-300 transition-colors cursor-pointer'
+										title={`Click to delete saved grid ${index + 1}`}
+									>
+										<div className='grid grid-cols-3 gap-1'>
+											{image.map((row, rowIndex) =>
+												row.map((color, colIndex) => (
+													<div
+														key={`${rowIndex}-${colIndex}`}
+														style={{ backgroundColor: color }}
+														className='w-6 h-6 border border-gray-300 rounded-sm'
+														title={color}
+													/>
+												))
+											)}
+										</div>
+									</button>
+								))}
+								</div>
+							)}
+						</div>
 				</div>
 			</div>
 		</div>
