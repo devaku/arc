@@ -38,16 +38,38 @@ export default function CameraPage() {
 			.fill(null)
 			.map(() => Array(3).fill('#FFFFFF'))
 	);
+
+	// rolling buffer of recent center RGB samples to stabilize detection
+	const centerSamplesRef = useRef<Array<{r:number,g:number,b:number}>>([]);
+
+	// live detection state (face key and deltaE distance)
+	const [liveDetectedFace, setLiveDetectedFace] = useState<keyof CubeState | null>(null);
+	const [liveDetectedDist, setLiveDetectedDist] = useState<number | null>(null);
     
-	const emptyFace = Array(3).fill(null).map(() => Array(3).fill('#CCCCCC'));
-    
+	// helper to create a 3x3 face with an immutable center color and placeholder for others
+	function createFace(centerHex: string) {
+		const face = Array.from({ length: 3 }, () => Array(3).fill('#CCCCCC')) as string[][];
+		face[1][1] = centerHex; // fixed center
+		return face;
+	}
+
+	// default fixed centers that indicate which face is which (user cannot change centers)
+	const DEFAULT_CENTERS = {
+		top: '#FFFFFF', // U
+		right: '#B71234', // R
+		front: '#009B48', // F
+		bottom: '#FFD500', // D
+		left: '#FF5800', // L
+		back: '#0046AD', // B
+	};
+
 	const [cubeState, setCubeState] = useState<CubeState>({
-		front: emptyFace,
-		back: emptyFace,
-		left: emptyFace,
-		right: emptyFace,
-		top: emptyFace,
-		bottom: emptyFace,
+		front: createFace(DEFAULT_CENTERS.front),
+		back: createFace(DEFAULT_CENTERS.back),
+		left: createFace(DEFAULT_CENTERS.left),
+		right: createFace(DEFAULT_CENTERS.right),
+		top: createFace(DEFAULT_CENTERS.top),
+		bottom: createFace(DEFAULT_CENTERS.bottom),
 	});
 
 	const [mouseDown, setMouseDown] = useState(false);
@@ -61,6 +83,9 @@ export default function CameraPage() {
 	const COLOR_ORDER = ['#FFFFFF', '#FFD500', '#B71234', '#FF5800', '#0046AD', '#009B48'];
 
 	function cycleSticker(face: keyof CubeState, row: number, col: number) {
+		// prevent changing the fixed center sticker
+		if (row === 1 && col === 1) return;
+
 		setCubeState(prev => {
 			const next = JSON.parse(JSON.stringify(prev)) as CubeState;
 			const cur = (next[face][row][col] || '').toUpperCase();
@@ -212,6 +237,57 @@ export default function CameraPage() {
 				const avgB = median(Bs);
 
 				newGridColors[row][col] = rgbToHex(avgR, avgG, avgB);
+
+
+				// If this is the center cell, push raw median RGB into rolling buffer
+				if (row === 1 && col === 1) {
+					try {
+						centerSamplesRef.current.push({ r: avgR, g: avgG, b: avgB });
+						// keep last 7 samples
+						if (centerSamplesRef.current.length > 7) centerSamplesRef.current.shift();
+				
+						// compute live detected face from the rolling buffer (median + Lab/DeltaE)
+						try {
+							// median across samples
+							const Rs = centerSamplesRef.current.map(s => s.r).sort((a,b)=>a-b);
+							const Gs = centerSamplesRef.current.map(s => s.g).sort((a,b)=>a-b);
+							const Bs = centerSamplesRef.current.map(s => s.b).sort((a,b)=>a-b);
+							function medianArr(arr:number[]){ if(arr.length===0) return 0; const m = Math.floor(arr.length/2); return arr.length%2===1?arr[m]:Math.round((arr[m-1]+arr[m])/2); }
+							const medR = medianArr(Rs);
+							const medG = medianArr(Gs);
+							const medB = medianArr(Bs);
+							const sampleLab = rgbToLab(medR, medG, medB);
+							let best: keyof CubeState | null = null;
+							let bestDist = Infinity;
+							for (const [faceKey, hex] of Object.entries(DEFAULT_CENTERS) as [keyof CubeState, string][]) {
+								const cmpLab = hexToLab(hex);
+								const d = deltaELab(sampleLab, cmpLab);
+								if (d < bestDist) { bestDist = d; best = faceKey; }
+							}
+							setLiveDetectedFace(best);
+							setLiveDetectedDist(Math.round(bestDist));
+						} catch (e) {
+							// fallback: simple rgb distance
+							try {
+								const sampleRgb = { r: avgR, g: avgG, b: avgB };
+								let best2: keyof CubeState | null = null;
+								let bestDist2 = Infinity;
+								for (const [faceKey, hex] of Object.entries(DEFAULT_CENTERS) as [keyof CubeState, string][]) {
+									const cmp = hexToRgb(hex);
+									const d2 = colorDistance(sampleRgb.r, sampleRgb.g, sampleRgb.b, cmp.r, cmp.g, cmp.b);
+									if (d2 < bestDist2) { bestDist2 = d2; best2 = faceKey; }
+								}
+								setLiveDetectedFace(best2);
+								setLiveDetectedDist(Math.round(bestDist2));
+							} catch (e2) {
+								setLiveDetectedFace(null);
+								setLiveDetectedDist(null);
+							}
+						}
+					} catch (e) {
+						// ignore
+					}
+				}
 			}
 		}
 
@@ -372,6 +448,108 @@ export default function CameraPage() {
 		}
 
 		return best.hex;
+	}
+
+	// Convert a hex color to Lab color space for more robust distance comparisons
+	function hexToLab(hex: string) {
+		const h = (hex || '#000000').replace('#','').trim();
+		let r = 0, g = 0, b = 0;
+		if (h.length === 3) {
+			r = parseInt(h[0]+h[0],16);
+			g = parseInt(h[1]+h[1],16);
+			b = parseInt(h[2]+h[2],16);
+		} else if (h.length >= 6) {
+			r = parseInt(h.substring(0,2),16);
+			g = parseInt(h.substring(2,4),16);
+			b = parseInt(h.substring(4,6),16);
+		}
+
+		function rgbToXyz(rn:number, gn:number, bn:number){
+			let rr = rn/255, gg = gn/255, bb = bn/255;
+			function pivot(c:number){return c > 0.04045 ? Math.pow((c+0.055)/1.055,2.4) : c/12.92}
+			rr = pivot(rr); gg = pivot(gg); bb = pivot(bb);
+			return {
+				x: (rr*0.4124564 + gg*0.3575761 + bb*0.1804375) * 100,
+				y: (rr*0.2126729 + gg*0.7151522 + bb*0.0721750) * 100,
+				z: (rr*0.0193339 + gg*0.1191920 + bb*0.9503041) * 100
+			};
+		}
+
+		function xyzToLab(x:number,y:number,z:number){
+			const refX = 95.047, refY = 100.0, refZ = 108.883;
+			x = x / refX; y = y / refY; z = z / refZ;
+			function pivot(t:number){ return t > 0.008856 ? Math.pow(t,1/3) : (7.787 * t) + 16/116 }
+			const fx = pivot(x), fy = pivot(y), fz = pivot(z);
+			return { L: (116 * fy) - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
+		}
+
+		const xyz = rgbToXyz(r,g,b);
+		return xyzToLab(xyz.x, xyz.y, xyz.z);
+	}
+
+	function deltaELab(l1:any, l2:any){
+		return Math.sqrt(Math.pow(l1.L - l2.L,2) + Math.pow(l1.a - l2.a,2) + Math.pow(l1.b - l2.b,2));
+	}
+
+	// Convert hex string to RGB numeric triple (module-level helper)
+	function hexToRgb(hex: string) {
+		if (!hex) return { r: 0, g: 0, b: 0 };
+		const h = hex.replace('#', '').trim();
+		if (h.length === 3) {
+			return {
+				r: parseInt(h[0] + h[0], 16),
+				g: parseInt(h[1] + h[1], 16),
+				b: parseInt(h[2] + h[2], 16),
+			};
+		}
+		return {
+			r: parseInt(h.substring(0, 2), 16),
+			g: parseInt(h.substring(2, 4), 16),
+			b: parseInt(h.substring(4, 6), 16),
+		};
+	}
+
+	// Convert numeric RGB to Lab
+	function rgbToLab(rn:number, gn:number, bn:number) {
+		function rgbToXyz(r:number,g:number,b:number){
+			let rr = r/255, gg = g/255, bb = b/255;
+			function pivot(c:number){return c > 0.04045 ? Math.pow((c+0.055)/1.055,2.4) : c/12.92}
+			rr = pivot(rr); gg = pivot(gg); bb = pivot(bb);
+			return {
+				x: (rr*0.4124564 + gg*0.3575761 + bb*0.1804375) * 100,
+				y: (rr*0.2126729 + gg*0.7151522 + bb*0.0721750) * 100,
+				z: (rr*0.0193339 + gg*0.1191920 + bb*0.9503041) * 100
+			};
+		}
+
+		// Global hex -> rgb helper (used by live detection)
+		function hexToRgb(hex: string) {
+			if (!hex) return { r: 0, g: 0, b: 0 };
+			const h = hex.replace('#', '').trim();
+			if (h.length === 3) {
+				return {
+					r: parseInt(h[0] + h[0], 16),
+					g: parseInt(h[1] + h[1], 16),
+					b: parseInt(h[2] + h[2], 16),
+				};
+			}
+			return {
+				r: parseInt(h.substring(0, 2), 16),
+				g: parseInt(h.substring(2, 4), 16),
+				b: parseInt(h.substring(4, 6), 16),
+			};
+		}
+
+		function xyzToLab(x:number,y:number,z:number){
+			const refX = 95.047, refY = 100.0, refZ = 108.883;
+			x = x / refX; y = y / refY; z = z / refZ;
+			function pivot(t:number){ return t > 0.008856 ? Math.pow(t,1/3) : (7.787 * t) + 16/116 }
+			const fx = pivot(x), fy = pivot(y), fz = pivot(z);
+			return { L: (116 * fy) - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
+		}
+
+		const xyz = rgbToXyz(rn, gn, bn);
+		return xyzToLab(xyz.x, xyz.y, xyz.z);
 	}
 
 	function draw3DCube() {
@@ -554,6 +732,8 @@ export default function CameraPage() {
 
 	function handleStartClick() {
 		console.log('Color Processing Start');
+		// clear any previous center samples when starting
+		centerSamplesRef.current = [];
 		startInterval();
 		setScanningButton('Stop Scanning');
 	}
@@ -562,21 +742,99 @@ export default function CameraPage() {
 		console.log('Color Processing Stop');
 		setGridColors(Array(3).fill(null).map(() => Array(3).fill('#FFFFFF')));
 		stopInterval();
+		// clear center samples when stopping
+		centerSamplesRef.current = [];
 		setScanningButton('Start Scanning');
 	}
 
 	function handleSaveClick() {
-		console.log(`Colors Saved to ${currentFace} face`);
+		console.log(`Attempting to save scanned colors (current UI face: ${currentFace})`);
+
+		// helper: convert 6/3/4 hex -> rgb
+		function hexToRgb(hex: string) {
+			if (!hex) return { r: 0, g: 0, b: 0 };
+			const h = hex.replace('#', '').trim();
+			if (h.length === 3) {
+				return {
+					r: parseInt(h[0] + h[0], 16),
+					g: parseInt(h[1] + h[1], 16),
+					b: parseInt(h[2] + h[2], 16),
+				};
+			}
+			return {
+				r: parseInt(h.substring(0, 2), 16),
+				g: parseInt(h.substring(2, 4), 16),
+				b: parseInt(h.substring(4, 6), 16),
+			};
+		}
+
+		// detect center color from the current scan grid
+		const centerHex = (gridColors && gridColors[1] && gridColors[1][1]) || '';
+		let detectedFace: keyof CubeState | null = null;
+		let detectedDistance = Infinity;
+		try {
+			// Use the rolling buffer of recent center samples if available
+			let sampleLab;
+			if (centerSamplesRef.current && centerSamplesRef.current.length > 0) {
+				// compute median per channel across samples for stability
+				function medianArr(arr:number[]){ arr.sort((a,b)=>a-b); const m=Math.floor(arr.length/2); return arr.length%2===1?arr[m]:Math.round((arr[m-1]+arr[m])/2); }
+				const Rs = centerSamplesRef.current.map(s=>s.r);
+				const Gs = centerSamplesRef.current.map(s=>s.g);
+				const Bs = centerSamplesRef.current.map(s=>s.b);
+				const medR = medianArr(Rs);
+				const medG = medianArr(Gs);
+				const medB = medianArr(Bs);
+				sampleLab = rgbToLab(medR, medG, medB);
+			} else {
+				// fall back to single-frame center
+				const cRgb = hexToRgb(centerHex);
+				sampleLab = rgbToLab(cRgb.r, cRgb.g, cRgb.b);
+			}
+
+			for (const [faceKey, hex] of Object.entries(DEFAULT_CENTERS) as [keyof CubeState, string][]) {
+				const cmpLab = hexToLab(hex);
+				const d = deltaELab(sampleLab, cmpLab);
+				if (d < detectedDistance) {
+					detectedDistance = d;
+					detectedFace = faceKey;
+				}
+			}
+		} catch (e) {
+			console.warn('Center detection failed (lab)', e);
+			try {
+				const centerRgb = hexToRgb(centerHex);
+				for (const [faceKey, hex] of Object.entries(DEFAULT_CENTERS) as [keyof CubeState, string][]) {
+					const cmp = hexToRgb(hex);
+					const d = colorDistance(centerRgb.r, centerRgb.g, centerRgb.b, cmp.r, cmp.g, cmp.b);
+					if (d < detectedDistance) {
+						detectedDistance = d;
+						detectedFace = faceKey;
+					}
+				}
+			} catch (e2) {
+				console.warn('Fallback RGB center detection failed', e2);
+			}
+		}
+
+			let targetFace: keyof CubeState = currentFace;
+			if (detectedFace) {
+				// automatically use the detected face (no confirmation)
+				console.log(`Auto-detected face ${detectedFace} (distance ${Math.round(detectedDistance)}) — saving to detected face.`);
+				targetFace = detectedFace;
+			}
+
+		// Save the grid to the chosen face
 		setCubeState(prev => ({
 			...prev,
-			[currentFace]: JSON.parse(JSON.stringify(gridColors))
+			[targetFace]: JSON.parse(JSON.stringify(gridColors))
 		}));
-		// Ask user whether they want to move to the next face and continue scanning
+
+		// Ask whether user wants to move to the next face (based on the chosen face)
 		const order: (keyof CubeState)[] = ['front', 'right', 'back', 'left', 'top', 'bottom'];
-		const idx = order.indexOf(currentFace);
+		const idx = order.indexOf(targetFace);
 		const next = order[(idx + 1) % order.length];
 
-		const goNext = typeof window !== 'undefined' ? window.confirm(`Saved ${currentFace}. Move camera to ${next} and continue scanning?`) : false;
+		const goNext = typeof window !== 'undefined' ? window.confirm(`Saved ${targetFace}. Move camera to ${next} and continue scanning?`) : false;
 
 		if (goNext) {
 			setCurrentFace(next);
@@ -628,6 +886,25 @@ export default function CameraPage() {
 				(cubejsModule && cubejsModule.default && typeof cubejsModule.default.solve === 'function' && cubejsModule.default) ||
 				(cubejsModule && typeof cubejsModule.default === 'function' && cubejsModule.default) ||
 				cubejsModule;
+
+			// If the imported cubejs exposes an init function to compute tables,
+			// call it before solving (some builds require initialization).
+			try {
+				if (cubejs && typeof cubejs.initSolver === 'function') {
+					console.log('Initializing cubejs via initSolver()');
+					cubejs.initSolver();
+				} else if (cubejsModule && typeof cubejsModule.initSolver === 'function') {
+					console.log('Initializing cubejs (module.initSolver)');
+					cubejsModule.initSolver();
+				} else if (cubejs && typeof cubejs.computeMoveTables === 'function') {
+					// fallback initialization
+					console.log('Initializing cubejs via computeMoveTables/computePruningTables');
+					try { cubejs.computeMoveTables(); } catch (e) { /* ignore */ }
+					try { cubejs.computePruningTables && cubejs.computePruningTables(); } catch (e) { /* ignore */ }
+				}
+			} catch (e) {
+				console.warn('cubejs initialization failed', e);
+			}
 
 			const stateStr = cubeStateToCubejsString(cubeState);
 			let solution: string | null = null;
@@ -710,12 +987,12 @@ export default function CameraPage() {
 
 	function resetCube() {
 		setCubeState({
-			front: emptyFace,
-			back: emptyFace,
-			left: emptyFace,
-			right: emptyFace,
-			top: emptyFace,
-			bottom: emptyFace,
+			front: createFace(DEFAULT_CENTERS.front),
+			back: createFace(DEFAULT_CENTERS.back),
+			left: createFace(DEFAULT_CENTERS.left),
+			right: createFace(DEFAULT_CENTERS.right),
+			top: createFace(DEFAULT_CENTERS.top),
+			bottom: createFace(DEFAULT_CENTERS.bottom),
 		});
 	}
 
@@ -759,19 +1036,22 @@ export default function CameraPage() {
 
 					</div>
 					<div className="flex flex-col gap-3 items-center">
-						<label className="text-xl">Select Face:</label>
-						<select 
-							value={currentFace} 
-							onChange={(e) => setCurrentFace(e.target.value as keyof CubeState)}
-							className="p-2 rounded bg-white text-black border-2 border-emerald-700"
-						>
-							<option value="front">Front</option>
-							<option value="back">Back</option>
-							<option value="left">Left</option>
-							<option value="right">Right</option>
-							<option value="top">Top</option>
-							<option value="bottom">Bottom</option>
-						</select>
+						<div className="text-xl">Face will be detected automatically when saving</div>
+						{/* Live detected face badge */}
+						<div className="mt-2">
+							{liveDetectedFace ? (
+								<div className="flex items-center gap-2 bg-white/10 text-white px-3 py-1 rounded">
+									<div className="w-5 h-5 rounded-sm" style={{ backgroundColor: DEFAULT_CENTERS[liveDetectedFace] }} />
+									<div className="text-sm">Detected: <strong className="uppercase">{liveDetectedFace}</strong></div>
+									<div className="text-xs opacity-80">{liveDetectedDist !== null ? `ΔE ${liveDetectedDist.toFixed(2)}` : ''}</div>
+									{liveDetectedDist !== null && liveDetectedDist > 10 && (
+										<div className="ml-2 text-xs text-yellow-300">Low confidence</div>
+									)}
+								</div>
+							) : (
+								<div className="text-sm text-white/70">Detecting face...</div>
+							)}
+						</div>
 					</div>
 					<div className="flex justify-center gap-5">
 						{scanningButton === "Start Scanning" ? (
@@ -794,7 +1074,7 @@ export default function CameraPage() {
 								onClick={handleSaveClick}
 								className="cursor-pointer w-35 p-2 rounded bg-emerald-600 border-5 border-y-emerald-700 border-x-emerald-500 text-white"
 							>
-								Save to {currentFace}
+								Save Scan
 							</button>
 						)}
 					</div>
@@ -830,14 +1110,18 @@ export default function CameraPage() {
 								<div className="flex flex-col items-center">
 									<h4 className="text-sm text-white mb-2">Top</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-										{cubeState.top.map((row, rowIndex) => row.map((color, colIndex) => (
-											<div
-												key={`top-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
-												onClick={() => manualEdit && cycleSticker('top', rowIndex, colIndex)}
-											/>
-										))).flat()}
+										{cubeState.top.map((row, rowIndex) => row.map((color, colIndex) => {
+											const isCenter = rowIndex === 1 && colIndex === 1;
+											return (
+												<div
+													key={`top-${rowIndex}-${colIndex}`}
+													style={{ backgroundColor: color }}
+													className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit && !isCenter ? 'cursor-pointer' : ''} ${isCenter ? 'opacity-90 ring-2 ring-white' : ''}`}
+													onClick={() => { if (!manualEdit) return; if (isCenter) return; cycleSticker('top', rowIndex, colIndex); }}
+													title={isCenter ? 'Center (fixed)' : color}
+												/>
+											);
+										})).flat()}
 									</div>
 								</div>
 
@@ -845,14 +1129,18 @@ export default function CameraPage() {
 								<div className="flex flex-col items-center">
 									<h4 className="text-sm text-white mb-2">Front</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-										{cubeState.front.map((row, rowIndex) => row.map((color, colIndex) => (
-											<div
-												key={`front-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
-												onClick={() => manualEdit && cycleSticker('front', rowIndex, colIndex)}
-											/>
-										))).flat()}
+										{cubeState.front.map((row, rowIndex) => row.map((color, colIndex) => {
+											const isCenter = rowIndex === 1 && colIndex === 1;
+											return (
+												<div
+													key={`front-${rowIndex}-${colIndex}`}
+													style={{ backgroundColor: color }}
+													className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit && !isCenter ? 'cursor-pointer' : ''} ${isCenter ? 'opacity-90 ring-2 ring-white' : ''}`}
+													onClick={() => { if (!manualEdit) return; if (isCenter) return; cycleSticker('front', rowIndex, colIndex); }}
+													title={isCenter ? 'Center (fixed)' : color}
+												/>
+											);
+										})).flat()}
 									</div>
 								</div>
 
@@ -860,14 +1148,18 @@ export default function CameraPage() {
 								<div className="flex flex-col items-center">
 									<h4 className="text-sm text-white mb-2">Right</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-										{cubeState.right.map((row, rowIndex) => row.map((color, colIndex) => (
-											<div
-												key={`right-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
-												onClick={() => manualEdit && cycleSticker('right', rowIndex, colIndex)}
-											/>
-										))).flat()}
+										{cubeState.right.map((row, rowIndex) => row.map((color, colIndex) => {
+											const isCenter = rowIndex === 1 && colIndex === 1;
+											return (
+												<div
+													key={`right-${rowIndex}-${colIndex}`}
+													style={{ backgroundColor: color }}
+													className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit && !isCenter ? 'cursor-pointer' : ''} ${isCenter ? 'opacity-90 ring-2 ring-white' : ''}`}
+													onClick={() => { if (!manualEdit) return; if (isCenter) return; cycleSticker('right', rowIndex, colIndex); }}
+													title={isCenter ? 'Center (fixed)' : color}
+												/>
+											);
+										})).flat()}
 									</div>
 								</div>
 
@@ -875,14 +1167,18 @@ export default function CameraPage() {
 								<div className="flex flex-col items-center">
 									<h4 className="text-sm text-white mb-2">Left</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-										{cubeState.left.map((row, rowIndex) => row.map((color, colIndex) => (
-											<div
-												key={`left-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
-												onClick={() => manualEdit && cycleSticker('left', rowIndex, colIndex)}
-											/>
-										))).flat()}
+										{cubeState.left.map((row, rowIndex) => row.map((color, colIndex) => {
+											const isCenter = rowIndex === 1 && colIndex === 1;
+											return (
+												<div
+													key={`left-${rowIndex}-${colIndex}`}
+													style={{ backgroundColor: color }}
+													className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit && !isCenter ? 'cursor-pointer' : ''} ${isCenter ? 'opacity-90 ring-2 ring-white' : ''}`}
+													onClick={() => { if (!manualEdit) return; if (isCenter) return; cycleSticker('left', rowIndex, colIndex); }}
+													title={isCenter ? 'Center (fixed)' : color}
+												/>
+											);
+										})).flat()}
 									</div>
 								</div>
 
@@ -890,14 +1186,18 @@ export default function CameraPage() {
 								<div className="flex flex-col items-center">
 									<h4 className="text-sm text-white mb-2">Back</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-										{cubeState.back.map((row, rowIndex) => row.map((color, colIndex) => (
-											<div
-												key={`back-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
-												onClick={() => manualEdit && cycleSticker('back', rowIndex, colIndex)}
-											/>
-										))).flat()}
+										{cubeState.back.map((row, rowIndex) => row.map((color, colIndex) => {
+											const isCenter = rowIndex === 1 && colIndex === 1;
+											return (
+												<div
+													key={`back-${rowIndex}-${colIndex}`}
+													style={{ backgroundColor: color }}
+													className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit && !isCenter ? 'cursor-pointer' : ''} ${isCenter ? 'opacity-90 ring-2 ring-white' : ''}`}
+													onClick={() => { if (!manualEdit) return; if (isCenter) return; cycleSticker('back', rowIndex, colIndex); }}
+													title={isCenter ? 'Center (fixed)' : color}
+												/>
+											);
+										})).flat()}
 									</div>
 								</div>
 
@@ -905,14 +1205,18 @@ export default function CameraPage() {
 								<div className="flex flex-col items-center">
 									<h4 className="text-sm text-white mb-2">Bottom</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-										{cubeState.bottom.map((row, rowIndex) => row.map((color, colIndex) => (
-											<div
-												key={`bottom-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
-												onClick={() => manualEdit && cycleSticker('bottom', rowIndex, colIndex)}
-											/>
-										))).flat()}
+										{cubeState.bottom.map((row, rowIndex) => row.map((color, colIndex) => {
+											const isCenter = rowIndex === 1 && colIndex === 1;
+											return (
+												<div
+													key={`bottom-${rowIndex}-${colIndex}`}
+													style={{ backgroundColor: color }}
+													className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit && !isCenter ? 'cursor-pointer' : ''} ${isCenter ? 'opacity-90 ring-2 ring-white' : ''}`}
+													onClick={() => { if (!manualEdit) return; if (isCenter) return; cycleSticker('bottom', rowIndex, colIndex); }}
+													title={isCenter ? 'Center (fixed)' : color}
+												/>
+											);
+										})).flat()}
 									</div>
 								</div>
 							</div>
@@ -932,15 +1236,7 @@ export default function CameraPage() {
 									onMouseLeave={handleMouseUp}
 								/>
 
-								{/* view buttons */}
-								<div className="flex flex-col gap-2">
-									<button onClick={() => viewSide('front')} className={`p-2 rounded ${currentFace === 'front' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Front</button>
-									<button onClick={() => viewSide('right')} className={`p-2 rounded ${currentFace === 'right' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Right</button>
-									<button onClick={() => viewSide('back')} className={`p-2 rounded ${currentFace === 'back' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Back</button>
-									<button onClick={() => viewSide('left')} className={`p-2 rounded ${currentFace === 'left' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Left</button>
-									<button onClick={() => viewSide('top')} className={`p-2 rounded ${currentFace === 'top' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Top</button>
-									<button onClick={() => viewSide('bottom')} className={`p-2 rounded ${currentFace === 'bottom' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Bottom</button>
-								</div>
+								{/* view buttons removed - cube orientation controlled by drag */}
 							</div>
 					<p className="text-sm text-center">Drag to rotate</p>
 
