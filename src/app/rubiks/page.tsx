@@ -834,17 +834,11 @@ export default function CameraPage() {
 		const idx = order.indexOf(targetFace);
 		const next = order[(idx + 1) % order.length];
 
-		const goNext = typeof window !== 'undefined' ? window.confirm(`Saved ${targetFace}. Move camera to ${next} and continue scanning?`) : false;
-
-		if (goNext) {
-			setCurrentFace(next);
-			// ensure scanning is running
-			startInterval();
-			setScanningButton('Stop Scanning');
-		} else {
-			stopInterval();
-			setScanningButton('Start Scanning');
-		}
+		// After saving, automatically move to the next face and continue scanning (no user prompts)
+		setCurrentFace(next);
+		// ensure scanning is running
+		startInterval();
+		setScanningButton('Stop Scanning');
 	}
 
 	async function handleSolveClick() {
