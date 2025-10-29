@@ -1,7 +1,12 @@
-'use client';
+
+ 'use client';
 // pages/camera.js
 import { useEffect, useRef, useState } from 'react';
 import useGetCamera from '@/hooks/useGetCamera';
+import useScaleToViewport from '@/hooks/useScaleToViewport';
+import { cubeStateToCubejsString } from '@/lib/cubeAdapter';
+import dynamic from 'next/dynamic';
+import SolverAnimator from '@/components/SolverAnimator';
 import Icon from '../../../images/ARC Solver PNG.png';
 import Image from 'next/image';
 
@@ -33,9 +38,9 @@ export default function CameraPage() {
 			.fill(null)
 			.map(() => Array(3).fill('#FFFFFF'))
 	);
-	
+    
 	const emptyFace = Array(3).fill(null).map(() => Array(3).fill('#CCCCCC'));
-	
+    
 	const [cubeState, setCubeState] = useState<CubeState>({
 		front: emptyFace,
 		back: emptyFace,
@@ -47,9 +52,92 @@ export default function CameraPage() {
 
 	const [mouseDown, setMouseDown] = useState(false);
 	const [rotation, setRotation] = useState({ x: -20, y: 30 });
+	const [moves, setMoves] = useState<string[]>([]);
+	const [solutionStr, setSolutionStr] = useState<string>('');
+	const [debugVisible, setDebugVisible] = useState<boolean>(false);
+	const [debugStateStr, setDebugStateStr] = useState<string>('');
+	const [debugCounts, setDebugCounts] = useState<Record<string, number>>({});
+	const [manualEdit, setManualEdit] = useState<boolean>(false);
+	const COLOR_ORDER = ['#FFFFFF', '#FFD500', '#B71234', '#FF5800', '#0046AD', '#009B48'];
+
+	function cycleSticker(face: keyof CubeState, row: number, col: number) {
+		setCubeState(prev => {
+			const next = JSON.parse(JSON.stringify(prev)) as CubeState;
+			const cur = (next[face][row][col] || '').toUpperCase();
+			const idx = COLOR_ORDER.findIndex(c => c.toUpperCase() === cur);
+			const newColor = COLOR_ORDER[(idx + 1) % COLOR_ORDER.length];
+			next[face][row][col] = newColor;
+			return next;
+		});
+	}
+	const [colorMode, setColorMode] = useState<'lab' | 'rgb'>('lab');
 	const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
 
+	// animation refs for view buttons
+	const animRef = useRef<number | null>(null);
+	const rotationRef = useRef(rotation);
+	useEffect(() => { rotationRef.current = rotation; }, [rotation]);
+
+	useEffect(() => {
+		return () => {
+			if (animRef.current) cancelAnimationFrame(animRef.current);
+		};
+	}, []);
+
+	function animateTo(target: { x: number; y: number }, duration = 800) {
+		if (animRef.current) cancelAnimationFrame(animRef.current);
+
+		const start = performance.now();
+		const from = { ...rotationRef.current };
+
+		function ease(t: number) { return 1 - Math.pow(1 - t, 3); }
+
+		function step(now: number) {
+			const t = Math.min(1, (now - start) / duration);
+			const e = ease(t);
+			setRotation({
+				x: from.x + (target.x - from.x) * e,
+				y: from.y + (target.y - from.y) * e,
+			});
+
+			if (t < 1) {
+				animRef.current = requestAnimationFrame(step);
+			} else {
+				animRef.current = null;
+			}
+		}
+
+		animRef.current = requestAnimationFrame(step);
+	}
+
+	function viewSide(side: 'front' | 'right' | 'back' | 'left' | 'top' | 'bottom') {
+		// reset quickly to a neutral pose then animate to target for a nicer effect
+		const reset = { x: -20, y: 30 };
+		setRotation(reset);
+		rotationRef.current = reset;
+
+		const presets: Record<string, { x: number; y: number }> = {
+			// slightly tilted, head-on views like the provided screenshot
+			front: { x: -6, y: 0 },
+			right: { x: -6, y: 90 },
+			back: { x: -6, y: 180 },
+			left: { x: -6, y: 270 },
+			// top and bottom are more extreme
+			top: { x: -80, y: 0 },
+			bottom: { x: 80, y: 0 },
+		};
+
+		const target = presets[side];
+		// make the UI select the face that we're viewing so "Save to" maps correctly
+		setCurrentFace(side as keyof CubeState);
+		setTimeout(() => animateTo(target, 900), 30);
+	}
+
 	useGetCamera(videoRef, setLoading, setError);
+
+	// scaling
+	const designWidth = 1400;
+	const scale = useScaleToViewport(designWidth, 0.35);
 
 	function startInterval() {
 		if (intervalRef.current) {
@@ -93,23 +181,35 @@ export default function CameraPage() {
 				const centerX = Math.floor(col * cellWidth + cellWidth / 2);
 				const centerY = Math.floor(row * cellHeight + cellHeight / 2);
 
-				const sampleSize = 5;
-				let totalR = 0, totalG = 0, totalB = 0;
-				let pixelCount = 0;
+
+				// more robust sampling: take a larger sample and use median per channel to avoid highlights
+				const sampleSize = 9; // 9x9 neighborhood
+				const Rs: number[] = [];
+				const Gs: number[] = [];
+				const Bs: number[] = [];
 
 				for (let dy = -Math.floor(sampleSize / 2); dy <= Math.floor(sampleSize / 2); dy++) {
 					for (let dx = -Math.floor(sampleSize / 2); dx <= Math.floor(sampleSize / 2); dx++) {
-						const pixelData = ctx.getImageData(centerX + dx, centerY + dy, 1, 1).data;
-						totalR += pixelData[0];
-						totalG += pixelData[1];
-						totalB += pixelData[2];
-						pixelCount++;
+						const x = centerX + dx;
+						const y = centerY + dy;
+						if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue;
+						const pixelData = ctx.getImageData(x, y, 1, 1).data;
+						Rs.push(pixelData[0]);
+						Gs.push(pixelData[1]);
+						Bs.push(pixelData[2]);
 					}
 				}
 
-				const avgR = Math.floor(totalR / pixelCount);
-				const avgG = Math.floor(totalG / pixelCount);
-				const avgB = Math.floor(totalB / pixelCount);
+				function median(arr: number[]) {
+					if (arr.length === 0) return 0;
+					arr.sort((a, b) => a - b);
+					const mid = Math.floor(arr.length / 2);
+					return arr.length % 2 === 1 ? arr[mid] : Math.round((arr[mid - 1] + arr[mid]) / 2);
+				}
+
+				const avgR = median(Rs);
+				const avgG = median(Gs);
+				const avgB = median(Bs);
 
 				newGridColors[row][col] = rgbToHex(avgR, avgG, avgB);
 			}
@@ -144,6 +244,10 @@ export default function CameraPage() {
 	}
 
 	useEffect(() => {
+		// start scanning immediately when component mounts
+		startInterval();
+		setScanningButton('Stop Scanning');
+
 		return () => stopInterval();
 	}, []);
 
@@ -190,15 +294,90 @@ export default function CameraPage() {
 		g = Math.max(0, Math.min(255, Math.round(g)));
 		b = Math.max(0, Math.min(255, Math.round(b)));
 
-		// Map to closest Rubik's cube color
-		return findClosestRubiksColor(r, g, b);
+		// Convert sampled RGB to Lab and pick nearest Rubik color by DeltaE (Lab distance)
+
+		function rgbToXyz(r: number, g: number, b: number) {
+			// sRGB (D65)
+			r = r / 255;
+			g = g / 255;
+			b = b / 255;
+
+			function pivot(c: number) {
+				return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92;
+			}
+
+			r = pivot(r);
+			g = pivot(g);
+			b = pivot(b);
+
+			return {
+				x: (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) * 100,
+				y: (r * 0.2126729 + g * 0.7151522 + b * 0.0721750) * 100,
+				z: (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) * 100,
+			};
+		}
+
+		function xyzToLab(x: number, y: number, z: number) {
+			// D65 reference white
+			const refX = 95.047;
+			const refY = 100.0;
+			const refZ = 108.883;
+
+			x = x / refX;
+			y = y / refY;
+			z = z / refZ;
+
+			function pivot(t: number) {
+				return t > 0.008856 ? Math.pow(t, 1 / 3) : (7.787 * t) + 16 / 116;
+			}
+
+			const fx = pivot(x);
+			const fy = pivot(y);
+			const fz = pivot(z);
+
+			return {
+				L: (116 * fy) - 16,
+				a: 500 * (fx - fy),
+				b: 200 * (fy - fz),
+			};
+		}
+
+		function rgbToLabLocal(rn: number, gn: number, bn: number) {
+			const xyz = rgbToXyz(rn, gn, bn);
+			return xyzToLab(xyz.x, xyz.y, xyz.z);
+		}
+
+		function deltaE(lab1: any, lab2: any) {
+			// simple Euclidean in Lab space (deltaE76)
+			return Math.sqrt(
+				Math.pow(lab1.L - lab2.L, 2) +
+				Math.pow(lab1.a - lab2.a, 2) +
+				Math.pow(lab1.b - lab2.b, 2)
+			);
+		}
+
+		if (colorMode === 'rgb') {
+			// fallback to simple RGB euclidean distance
+			return findClosestRubiksColor(r, g, b);
+		}
+
+		const sampleLab = rgbToLabLocal(r, g, b);
+		let best = { hex: RUBIKS_COLORS.white.hex, dist: Infinity };
+		for (const [name, val] of Object.entries(RUBIKS_COLORS)) {
+			const lab = rgbToLabLocal(val.r, val.g, val.b);
+			const d = deltaE(sampleLab, lab);
+			if (d < best.dist) {
+				best = { hex: val.hex, dist: d };
+			}
+		}
+
+		return best.hex;
 	}
 
 	function draw3DCube() {
 		const canvas = cubeCanvasRef.current;
 		if (!canvas) return;
-		const ctx = canvas.getContext('2d');
-		if (!ctx) return;
+		const ctx = canvas.getContext('2d')!;
 
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -233,42 +412,41 @@ export default function CameraPage() {
 			};
 		}
 
-		function drawFace(face: CubeFace, corners: any[]) {
-			const avgZ = corners.reduce((sum, c) => sum + c.z, 0) / 4;
-			
-			// Only draw faces that are facing the camera (front-facing)
-			const v1 = { 
-				x: corners[1].x - corners[0].x, 
-				y: corners[1].y - corners[0].y, 
-				z: corners[1].z - corners[0].z 
+		function drawFace(face: CubeFace, projected: any[], original3D: any[]) {
+			const avgZ = original3D.reduce((sum, c) => sum + c.z, 0) / 4;
+
+			// Compute normal from the original 3D rotated corners (not projected)
+			const v1 = {
+				x: original3D[1].x - original3D[0].x,
+				y: original3D[1].y - original3D[0].y,
+				z: original3D[1].z - original3D[0].z,
 			};
-			const v2 = { 
-				x: corners[3].x - corners[0].x, 
-				y: corners[3].y - corners[0].y, 
-				z: corners[3].z - corners[0].z 
+			const v2 = {
+				x: original3D[3].x - original3D[0].x,
+				y: original3D[3].y - original3D[0].y,
+				z: original3D[3].z - original3D[0].z,
 			};
-			
-			// Cross product to find normal
+
 			const normal = {
 				x: v1.y * v2.z - v1.z * v2.y,
 				y: v1.z * v2.x - v1.x * v2.z,
-				z: v1.x * v2.y - v1.y * v2.x
+				z: v1.x * v2.y - v1.y * v2.x,
 			};
-			
-			// If normal.z is negative, the face is facing away from camera
-			if (normal.z < 0) return avgZ;
-			
+
+			// Cull faces that face away from the camera. Sign flipped so outside faces are drawn correctly.
+			if (normal.z > 0) return avgZ;
+
 			for (let row = 0; row < 3; row++) {
 				for (let col = 0; col < 3; col++) {
-					const x0 = corners[0].x + (corners[1].x - corners[0].x) * (col / 3);
-					const y0 = corners[0].y + (corners[1].y - corners[0].y) * (col / 3);
-					const x1 = corners[0].x + (corners[1].x - corners[0].x) * ((col + 1) / 3);
-					const y1 = corners[0].y + (corners[1].y - corners[0].y) * ((col + 1) / 3);
+					const x0 = projected[0].x + (projected[1].x - projected[0].x) * (col / 3);
+					const y0 = projected[0].y + (projected[1].y - projected[0].y) * (col / 3);
+					const x1 = projected[0].x + (projected[1].x - projected[0].x) * ((col + 1) / 3);
+					const y1 = projected[0].y + (projected[1].y - projected[0].y) * ((col + 1) / 3);
 
-					const x2 = corners[3].x + (corners[2].x - corners[3].x) * (col / 3);
-					const y2 = corners[3].y + (corners[2].y - corners[3].y) * (col / 3);
-					const x3 = corners[3].x + (corners[2].x - corners[3].x) * ((col + 1) / 3);
-					const y3 = corners[3].y + (corners[2].y - corners[3].y) * ((col + 1) / 3);
+					const x2 = projected[3].x + (projected[2].x - projected[3].x) * (col / 3);
+					const y2 = projected[3].y + (projected[2].y - projected[3].y) * (col / 3);
+					const x3 = projected[3].x + (projected[2].x - projected[3].x) * ((col + 1) / 3);
+					const y3 = projected[3].y + (projected[2].y - projected[3].y) * ((col + 1) / 3);
 
 					const topLeftX = x0 + (x2 - x0) * (row / 3);
 					const topLeftY = y0 + (y2 - y0) * (row / 3);
@@ -370,7 +548,7 @@ export default function CameraPage() {
 		projectedFaces.sort((a, b) => b.avgZ - a.avgZ);
 
 		projectedFaces.forEach(face => {
-			drawFace(face.data, face.projectedCorners);
+			drawFace(face.data, face.projectedCorners, face.corners);
 		});
 	}
 
@@ -393,8 +571,118 @@ export default function CameraPage() {
 			...prev,
 			[currentFace]: JSON.parse(JSON.stringify(gridColors))
 		}));
-		stopInterval();
-		setScanningButton('Start Scanning');
+		// Ask user whether they want to move to the next face and continue scanning
+		const order: (keyof CubeState)[] = ['front', 'right', 'back', 'left', 'top', 'bottom'];
+		const idx = order.indexOf(currentFace);
+		const next = order[(idx + 1) % order.length];
+
+		const goNext = typeof window !== 'undefined' ? window.confirm(`Saved ${currentFace}. Move camera to ${next} and continue scanning?`) : false;
+
+		if (goNext) {
+			setCurrentFace(next);
+			// ensure scanning is running
+			startInterval();
+			setScanningButton('Stop Scanning');
+		} else {
+			stopInterval();
+			setScanningButton('Start Scanning');
+		}
+	}
+
+	async function handleSolveClick() {
+		try {
+			// build and validate the cubejs state string before calling the solver
+			const stateStrPreview = cubeStateToCubejsString(cubeState);
+			// expose debug info for user: stateStr and per-face counts
+			setDebugStateStr(stateStrPreview);
+			const counts: Record<string, number> = {};
+			for (const ch of stateStrPreview) counts[ch] = (counts[ch] || 0) + 1;
+			setDebugCounts(counts);
+			function validateState(s: string) {
+				if (!s || s.length !== 54) return 'state string must be 54 characters long';
+				const counts: Record<string, number> = {};
+				for (const ch of s) counts[ch] = (counts[ch] || 0) + 1;
+				const required = ['U','R','F','D','L','B'];
+				for (const r of required) {
+					if (counts[r] !== 9) return `expected 9 stickers of ${r}, found ${counts[r] || 0}`;
+				}
+				// check centers (4th sticker of each 9-block) are unique
+				const centers = [4,13,22,31,40,49].map(i => s[i]);
+				const uniqueCenters = new Set(centers);
+				if (uniqueCenters.size !== 6) return `face centers are not unique (${centers.join(',')})`;
+				return null;
+			}
+
+			const validationError = validateState(stateStrPreview);
+			if (validationError) {
+				console.warn('Invalid cube state for solver:', validationError, { stateStr: stateStrPreview });
+				setSolutionStr(`Invalid cube state: ${validationError}`);
+				setMoves([]);
+				return;
+			}
+			// dynamic import so build doesn't fail if package isn't installed yet
+			const cubejsModule: any = await import('cubejs');
+			// normalize possible exports (commonjs vs ESM)
+			const cubejs: any =
+				(cubejsModule && typeof cubejsModule.solve === 'function' && cubejsModule) ||
+				(cubejsModule && cubejsModule.default && typeof cubejsModule.default.solve === 'function' && cubejsModule.default) ||
+				(cubejsModule && typeof cubejsModule.default === 'function' && cubejsModule.default) ||
+				cubejsModule;
+
+			const stateStr = cubeStateToCubejsString(cubeState);
+			let solution: string | null = null;
+			// Try multiple calling patterns to support different cubejs builds
+			try {
+				if (cubejs && typeof cubejs.solve === 'function') {
+					solution = cubejs.solve(stateStr);
+				} else if (cubejs && cubejs.default && typeof cubejs.default.solve === 'function') {
+					solution = cubejs.default.solve(stateStr);
+				} else if (typeof cubejs === 'function') {
+					// could be a function or a class
+					try {
+						const maybe = (cubejs as any)(stateStr);
+						if (typeof maybe === 'string') solution = maybe;
+					} catch (err: any) {
+						// if it's a class constructor, try new
+						if (/class constructors must be invoked with 'new'/.test(String(err.message))) {
+							const inst = new (cubejs as any)();
+							if (typeof inst.solve === 'function') {
+								solution = inst.solve(stateStr);
+							} else if (typeof inst === 'function') {
+								solution = inst(stateStr);
+							}
+						} else {
+							throw err;
+						}
+					}
+				} else if (cubejs && typeof cubejs === 'object') {
+					// try common named exports
+					const candidates = ['Cube', 'Solver', 'CubeJS'];
+					for (const c of candidates) {
+						const ctor = (cubejs as any)[c];
+						if (typeof ctor === 'function') {
+							try {
+								const inst = new ctor();
+								if (typeof inst.solve === 'function') {
+									solution = inst.solve(stateStr);
+									break;
+								}
+							} catch (e) {
+								// ignore and continue
+							}
+						}
+					}
+				}
+			} catch (err) {
+				console.error('Solver invocation failed shape test:', err, { cubejs });
+				throw err;
+			}
+			setSolutionStr(solution || '');
+			setMoves((solution || '').split(/\s+/).filter(Boolean));
+		} catch (e) {
+			console.error('Solver error', e);
+			setSolutionStr('Error computing solution (is cubejs installed?)');
+		}
 	}
 
 	function handleMouseDown(e: React.MouseEvent) {
@@ -445,8 +733,10 @@ export default function CameraPage() {
 					/>
 				</a>
 			</div>
+			{/* scaled container */}
+			<div style={{ width: designWidth + 'px', transform: `scale(${scale})`, transformOrigin: 'top center' }}>
 
-			<div className="flex flex-col gap-5 row-start-2 items-start w-fit h-fit bg-emerald-600 border-10 border-y-emerald-700 border-x-emerald-500 px-8 py-5 rounded-2xl shadow-lg">
+			<div className="flex flex-col gap-5 row-start-2 items-center w-fit bg-emerald-600 border-10 border-y-emerald-700 border-x-emerald-500 px-8 py-5 rounded-2xl shadow-lg mx-auto mb-10">
 				<h1 className="mx-auto text-center text-6xl">Rubik's Cube Scanner</h1>
 				{loading && <p className='mx-auto'>Requesting camera access...</p>}
 				{error && <p style={{ color: 'red' }}>Error: {error}</p>}
@@ -466,6 +756,7 @@ export default function CameraPage() {
 							ref={canvasRef}
 							className="absolute top-0 left-0 w-full h-full pointer-events-none rounded-md"
 						/>
+
 					</div>
 					<div className="flex flex-col gap-3 items-center">
 						<label className="text-xl">Select Face:</label>
@@ -527,95 +818,130 @@ export default function CameraPage() {
 					<h2 className='text-4xl mt-4'>Cube Net</h2>
 					<div className='w-fit h-fit bg-gray-800 border-4 border-y-emerald-700 border-x-emerald-500 rounded-lg p-6'>
 						<div className="flex flex-col items-center gap-2">
-							{/* Top face */}
-							<div className="flex justify-center">
-								<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-									{cubeState.top.map((row, rowIndex) =>
-										row.map((color, colIndex) => (
+							<div className="flex items-center gap-4 mb-2">
+								<h3 className="text-lg text-white">Cube Net</h3>
+								<button onClick={() => setManualEdit(m => !m)} className={`text-sm px-2 py-1 rounded ${manualEdit ? 'bg-emerald-500 text-white' : 'bg-white/10 text-white'}`}>
+									{manualEdit ? 'Manual Edit: ON' : 'Manual Edit: OFF'}
+								</button>
+							</div>
+							{/* Labeled 3x2 cube net: Row1 = Top / Front / Right ; Row2 = Left / Back / Bottom */}
+							<div className="grid grid-cols-3 gap-4">
+								{/* Top */}
+								<div className="flex flex-col items-center">
+									<h4 className="text-sm text-white mb-2">Top</h4>
+									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
+										{cubeState.top.map((row, rowIndex) => row.map((color, colIndex) => (
 											<div
 												key={`top-${rowIndex}-${colIndex}`}
 												style={{ backgroundColor: color }}
-												className='w-10 h-10 border-2 border-gray-900 rounded-sm'
+												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
+												onClick={() => manualEdit && cycleSticker('top', rowIndex, colIndex)}
 											/>
-										))
-									)}
+										))).flat()}
+									</div>
 								</div>
-							</div>
-							{/* Middle row: left, front, right, back */}
-							<div className="flex gap-2">
-								<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-									{cubeState.left.map((row, rowIndex) =>
-										row.map((color, colIndex) => (
-											<div
-												key={`left-${rowIndex}-${colIndex}`}
-												style={{ backgroundColor: color }}
-												className='w-10 h-10 border-2 border-gray-900 rounded-sm'
-											/>
-										))
-									)}
-								</div>
-								<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-									{cubeState.front.map((row, rowIndex) =>
-										row.map((color, colIndex) => (
+
+								{/* Front */}
+								<div className="flex flex-col items-center">
+									<h4 className="text-sm text-white mb-2">Front</h4>
+									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
+										{cubeState.front.map((row, rowIndex) => row.map((color, colIndex) => (
 											<div
 												key={`front-${rowIndex}-${colIndex}`}
 												style={{ backgroundColor: color }}
-												className='w-10 h-10 border-2 border-gray-900 rounded-sm'
+												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
+												onClick={() => manualEdit && cycleSticker('front', rowIndex, colIndex)}
 											/>
-										))
-									)}
+										))).flat()}
+									</div>
 								</div>
-								<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-									{cubeState.right.map((row, rowIndex) =>
-										row.map((color, colIndex) => (
+
+								{/* Right */}
+								<div className="flex flex-col items-center">
+									<h4 className="text-sm text-white mb-2">Right</h4>
+									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
+										{cubeState.right.map((row, rowIndex) => row.map((color, colIndex) => (
 											<div
 												key={`right-${rowIndex}-${colIndex}`}
 												style={{ backgroundColor: color }}
-												className='w-10 h-10 border-2 border-gray-900 rounded-sm'
+												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
+												onClick={() => manualEdit && cycleSticker('right', rowIndex, colIndex)}
 											/>
-										))
-									)}
+										))).flat()}
+									</div>
 								</div>
-								<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-									{cubeState.back.map((row, rowIndex) =>
-										row.map((color, colIndex) => (
+
+								{/* Left */}
+								<div className="flex flex-col items-center">
+									<h4 className="text-sm text-white mb-2">Left</h4>
+									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
+										{cubeState.left.map((row, rowIndex) => row.map((color, colIndex) => (
+											<div
+												key={`left-${rowIndex}-${colIndex}`}
+												style={{ backgroundColor: color }}
+												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
+												onClick={() => manualEdit && cycleSticker('left', rowIndex, colIndex)}
+											/>
+										))).flat()}
+									</div>
+								</div>
+
+								{/* Back */}
+								<div className="flex flex-col items-center">
+									<h4 className="text-sm text-white mb-2">Back</h4>
+									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
+										{cubeState.back.map((row, rowIndex) => row.map((color, colIndex) => (
 											<div
 												key={`back-${rowIndex}-${colIndex}`}
 												style={{ backgroundColor: color }}
-												className='w-10 h-10 border-2 border-gray-900 rounded-sm'
+												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
+												onClick={() => manualEdit && cycleSticker('back', rowIndex, colIndex)}
 											/>
-										))
-									)}
+										))).flat()}
+									</div>
 								</div>
-							</div>
-							{/* Bottom face */}
-							<div className="flex justify-center">
-								<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
-									{cubeState.bottom.map((row, rowIndex) =>
-										row.map((color, colIndex) => (
+
+								{/* Bottom */}
+								<div className="flex flex-col items-center">
+									<h4 className="text-sm text-white mb-2">Bottom</h4>
+									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
+										{cubeState.bottom.map((row, rowIndex) => row.map((color, colIndex) => (
 											<div
 												key={`bottom-${rowIndex}-${colIndex}`}
 												style={{ backgroundColor: color }}
-												className='w-10 h-10 border-2 border-gray-900 rounded-sm'
+												className={`w-10 h-10 border-2 border-gray-900 rounded-sm ${manualEdit ? 'cursor-pointer' : ''}`}
+												onClick={() => manualEdit && cycleSticker('bottom', rowIndex, colIndex)}
 											/>
-										))
-									)}
+										))).flat()}
+									</div>
 								</div>
 							</div>
 						</div>
 					</div>
 
 					<h2 className='text-4xl mt-4'>3D Preview</h2>
-					<canvas
-						ref={cubeCanvasRef}
-						width={400}
-						height={400}
-						className="border-4 border-y-emerald-700 border-x-emerald-500 bg-gray-100 rounded-lg cursor-move"
-						onMouseDown={handleMouseDown}
-						onMouseMove={handleMouseMove}
-						onMouseUp={handleMouseUp}
-						onMouseLeave={handleMouseUp}
-					/>
+							<div className="flex items-start gap-4">
+								<canvas
+									ref={cubeCanvasRef}
+									width={400}
+									height={400}
+									className="border-4 border-y-emerald-700 border-x-emerald-500 bg-gray-100 rounded-lg cursor-move"
+									onMouseDown={handleMouseDown}
+									onMouseMove={handleMouseMove}
+									onMouseUp={handleMouseUp}
+									onMouseLeave={handleMouseUp}
+								/>
+
+								{/* view buttons */}
+								<div className="flex flex-col gap-2">
+									<button onClick={() => viewSide('front')} className={`p-2 rounded ${currentFace === 'front' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Front</button>
+									<button onClick={() => viewSide('right')} className={`p-2 rounded ${currentFace === 'right' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Right</button>
+									<button onClick={() => viewSide('back')} className={`p-2 rounded ${currentFace === 'back' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Back</button>
+									<button onClick={() => viewSide('left')} className={`p-2 rounded ${currentFace === 'left' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Left</button>
+									<button onClick={() => viewSide('top')} className={`p-2 rounded ${currentFace === 'top' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Top</button>
+									<button onClick={() => viewSide('bottom')} className={`p-2 rounded ${currentFace === 'bottom' ? 'bg-white text-black' : 'bg-emerald-600 text-white'}`}>Bottom</button>
+								</div>
+							</div>
 					<p className="text-sm text-center">Drag to rotate</p>
 
 					<button
@@ -624,7 +950,40 @@ export default function CameraPage() {
 					>
 						Reset Cube
 					</button>
+
+					<div className="flex gap-2 mt-3 items-center">
+						<button onClick={handleSolveClick} className="px-3 py-1 rounded bg-blue-600 text-white">Solve</button>
+						{solutionStr && <div className="text-sm ml-2">{solutionStr}</div>}
+					</div>
+
+					<div className="mt-2">
+						<button className="text-sm underline" onClick={() => setDebugVisible(v => !v)}>{debugVisible ? 'Hide' : 'Show'} debug state</button>
+						{debugVisible && (
+							<div className="mt-2 bg-gray-900 text-white p-3 rounded">
+								<div className="mb-2 text-xs opacity-80">Generated cube state string (54 chars) — copy for debugging:</div>
+								<div className="mb-2 flex gap-2 items-center">
+									<span className="text-xs opacity-80">Color mapping:</span>
+									<button className={`text-xs px-2 py-1 rounded ${colorMode==='lab' ? 'bg-emerald-500 text-white' : 'bg-white/10'}`} onClick={() => { setColorMode('lab'); readVideoFeed(); }}>Lab (recommended)</button>
+									<button className={`text-xs px-2 py-1 rounded ${colorMode==='rgb' ? 'bg-emerald-500 text-white' : 'bg-white/10'}`} onClick={() => { setColorMode('rgb'); readVideoFeed(); }}>RGB (fallback)</button>
+								</div>
+								<textarea readOnly value={debugStateStr} className="w-full h-24 text-sm p-2 bg-black/50" />
+								<div className="mt-2 text-sm">Per-face counts:</div>
+								<div className="flex gap-3 mt-1 text-xs">
+									{['U','R','F','D','L','B'].map(k => (
+										<div key={k} className="px-2 py-1 bg-white/5 rounded">{k}: {debugCounts[k] || 0}</div>
+									))}
+								</div>
+							</div>
+						)}
+					</div>
+
+					{moves.length > 0 && (
+						<div className="w-full mt-4">
+							<SolverAnimator moves={moves} />
+						</div>
+					)}
 				</div>
+			</div>
 			</div>
 		</div>
 	);
