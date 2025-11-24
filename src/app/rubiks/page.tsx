@@ -1,7 +1,7 @@
 
  'use client';
 // pages/camera.js
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import useGetCamera from '@/hooks/useGetCamera';
 import useScaleToViewport from '@/hooks/useScaleToViewport';
 import { cubeStateToCubejsString } from '@/lib/cubeAdapter';
@@ -33,11 +33,11 @@ export default function CameraPage() {
 
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState<boolean>(true);
-	const [gridColors, setGridColors] = useState<string[][]>(
+		const [gridColors, setGridColors] = useState<string[][]>(
 		Array(3)
 			.fill(null)
-			.map(() => Array(3).fill('#FFFFFF'))
-	);
+			.map(() => Array(3).fill('#CCCCCC'))
+		);
 
 	// rolling buffer of recent center RGB samples to stabilize detection
 	const centerSamplesRef = useRef<Array<{r:number,g:number,b:number}>>([]);
@@ -80,6 +80,7 @@ export default function CameraPage() {
 	const [debugStateStr, setDebugStateStr] = useState<string>('');
 	const [debugCounts, setDebugCounts] = useState<Record<string, number>>({});
 	const [manualEdit, setManualEdit] = useState<boolean>(false);
+	const solverInitializedRef = useRef<boolean>(false);
 	const COLOR_ORDER = ['#FFFFFF', '#FFD500', '#B71234', '#FF5800', '#0046AD', '#009B48'];
 
 	function cycleSticker(face: keyof CubeState, row: number, col: number) {
@@ -329,7 +330,11 @@ export default function CameraPage() {
 
 	useEffect(() => {
 		draw3DCube();
-	}, [cubeState, rotation]);
+	}, [cubeState, rotation, gridColors, currentFace, scanningButton]);
+
+	// Auto-solve when cube is complete
+	const [autoSolving, setAutoSolving] = useState(false);
+	const hasAutoSolvedRef = useRef(false);
 
 	// Standard Rubik's Cube colors
 	const RUBIKS_COLORS = {
@@ -643,7 +648,14 @@ export default function CameraPage() {
 					ctx.lineTo(bottomLeftX, bottomLeftY);
 					ctx.closePath();
 
-					ctx.fillStyle = face[row][col];
+					const color = face[row][col];
+					// Ensure we have a valid color
+					if (color && color !== '#CCCCCC' && color !== '#222') {
+						ctx.fillStyle = color;
+					} else {
+						// Fallback to a visible color if invalid
+						ctx.fillStyle = '#888888';
+					}
 					ctx.fill();
 					ctx.strokeStyle = '#000';
 					ctx.lineWidth = 2;
@@ -654,6 +666,27 @@ export default function CameraPage() {
 			return avgZ;
 		}
 
+		// Use gridColors for the current face being scanned ONLY when actively scanning, otherwise use cubeState
+		const isScanning = scanningButton === 'Stop Scanning';
+		const getFaceData = (faceName: keyof CubeState): CubeFace => {
+			// Only show live scan when actively scanning and it's the current face
+			if (isScanning && faceName === currentFace && gridColors && gridColors.length === 3 && gridColors[0] && gridColors[0].length === 3) {
+				const valid = gridColors.every(row => row && row.length === 3);
+				// Only use gridColors if it has valid colors (not all placeholders)
+				const hasValidColors = gridColors.some(row => row.some(col => col && col !== '#CCCCCC' && col !== '#FFFFFF'));
+				if (valid && hasValidColors) {
+					return gridColors;
+				}
+			}
+			// Always return the cubeState face data, ensuring it exists
+			const faceData = cubeState[faceName];
+			if (!faceData || faceData.length !== 3) {
+				// Fallback to default center color if face is invalid
+				return createFace(DEFAULT_CENTERS[faceName]);
+			}
+			return faceData;
+		};
+
 		const faces = [
 			{
 				name: 'front',
@@ -663,7 +696,7 @@ export default function CameraPage() {
 					rotatePoint(cubeSize, cubeSize, cubeSize),
 					rotatePoint(-cubeSize, cubeSize, cubeSize),
 				],
-				data: cubeState.front
+				data: getFaceData('front')
 			},
 			{
 				name: 'back',
@@ -673,7 +706,7 @@ export default function CameraPage() {
 					rotatePoint(-cubeSize, cubeSize, -cubeSize),
 					rotatePoint(cubeSize, cubeSize, -cubeSize),
 				],
-				data: cubeState.back
+				data: getFaceData('back')
 			},
 			{
 				name: 'left',
@@ -683,7 +716,7 @@ export default function CameraPage() {
 					rotatePoint(-cubeSize, cubeSize, cubeSize),
 					rotatePoint(-cubeSize, cubeSize, -cubeSize),
 				],
-				data: cubeState.left
+				data: getFaceData('left')
 			},
 			{
 				name: 'right',
@@ -693,7 +726,7 @@ export default function CameraPage() {
 					rotatePoint(cubeSize, cubeSize, -cubeSize),
 					rotatePoint(cubeSize, cubeSize, cubeSize),
 				],
-				data: cubeState.right
+				data: getFaceData('right')
 			},
 			{
 				name: 'top',
@@ -703,7 +736,7 @@ export default function CameraPage() {
 					rotatePoint(cubeSize, -cubeSize, cubeSize),
 					rotatePoint(-cubeSize, -cubeSize, cubeSize),
 				],
-				data: cubeState.top
+				data: getFaceData('top')
 			},
 			{
 				name: 'bottom',
@@ -713,7 +746,7 @@ export default function CameraPage() {
 					rotatePoint(cubeSize, cubeSize, -cubeSize),
 					rotatePoint(-cubeSize, cubeSize, -cubeSize),
 				],
-				data: cubeState.bottom
+				data: getFaceData('bottom')
 			},
 		];
 
@@ -740,7 +773,8 @@ export default function CameraPage() {
 
 	function handleStopClick() {
 		console.log('Color Processing Stop');
-		setGridColors(Array(3).fill(null).map(() => Array(3).fill('#FFFFFF')));
+		// Don't reset gridColors to white - keep the last scanned colors
+		// setGridColors(Array(3).fill(null).map(() => Array(3).fill('#FFFFFF')));
 		stopInterval();
 		// clear center samples when stopping
 		centerSamplesRef.current = [];
@@ -841,8 +875,50 @@ export default function CameraPage() {
 		setScanningButton('Stop Scanning');
 	}
 
-	async function handleSolveClick() {
+	// Check if all faces are complete (all stickers filled, not placeholders)
+	const isCubeComplete = useCallback((): boolean => {
+		const placeholderColor = '#CCCCCC';
+		for (const faceKey of ['front', 'back', 'left', 'right', 'top', 'bottom'] as (keyof CubeState)[]) {
+			const face = cubeState[faceKey];
+			for (let row = 0; row < 3; row++) {
+				for (let col = 0; col < 3; col++) {
+					const color = face[row][col];
+					// Check if it's a placeholder color (gray)
+					if (color === placeholderColor || !color || color.trim() === '') {
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}, [cubeState]);
+
+	const handleSolveClick = useCallback(async () => {
 		try {
+			// First check if cube is complete (no placeholder colors)
+			const placeholderColor = '#CCCCCC';
+			let hasPlaceholders = false;
+			for (const faceKey of ['front', 'back', 'left', 'right', 'top', 'bottom'] as (keyof CubeState)[]) {
+				const face = cubeState[faceKey];
+				for (let row = 0; row < 3; row++) {
+					for (let col = 0; col < 3; col++) {
+						const color = face[row][col];
+						if (color === placeholderColor || !color || color.trim() === '' || color === '#222' || color === '#000000') {
+							hasPlaceholders = true;
+							break;
+						}
+					}
+					if (hasPlaceholders) break;
+				}
+				if (hasPlaceholders) break;
+			}
+			
+			if (hasPlaceholders) {
+				setSolutionStr('Please scan all faces completely before solving');
+				setMoves([]);
+				return;
+			}
+			
 			// build and validate the cubejs state string before calling the solver
 			const stateStrPreview = cubeStateToCubejsString(cubeState);
 			// expose debug info for user: stateStr and per-face counts
@@ -868,93 +944,134 @@ export default function CameraPage() {
 			const validationError = validateState(stateStrPreview);
 			if (validationError) {
 				console.warn('Invalid cube state for solver:', validationError, { stateStr: stateStrPreview });
-				setSolutionStr(`Invalid cube state: ${validationError}`);
+				setSolutionStr(`Invalid cube state: ${validationError}. Check debug info.`);
 				setMoves([]);
 				return;
 			}
+			
 			// dynamic import so build doesn't fail if package isn't installed yet
 			const cubejsModule: any = await import('cubejs');
-			// normalize possible exports (commonjs vs ESM)
-			const cubejs: any =
-				(cubejsModule && typeof cubejsModule.solve === 'function' && cubejsModule) ||
-				(cubejsModule && cubejsModule.default && typeof cubejsModule.default.solve === 'function' && cubejsModule.default) ||
-				(cubejsModule && typeof cubejsModule.default === 'function' && cubejsModule.default) ||
-				cubejsModule;
+			// Get the Cube class from the module
+			const Cube = cubejsModule?.default || cubejsModule?.Cube || cubejsModule;
 
-			// If the imported cubejs exposes an init function to compute tables,
-			// call it before solving (some builds require initialization).
-			try {
-				if (cubejs && typeof cubejs.initSolver === 'function') {
-					console.log('Initializing cubejs via initSolver()');
-					cubejs.initSolver();
-				} else if (cubejsModule && typeof cubejsModule.initSolver === 'function') {
-					console.log('Initializing cubejs (module.initSolver)');
-					cubejsModule.initSolver();
-				} else if (cubejs && typeof cubejs.computeMoveTables === 'function') {
-					// fallback initialization
-					console.log('Initializing cubejs via computeMoveTables/computePruningTables');
-					try { cubejs.computeMoveTables(); } catch (e) { /* ignore */ }
-					try { cubejs.computePruningTables && cubejs.computePruningTables(); } catch (e) { /* ignore */ }
-				}
-			} catch (e) {
-				console.warn('cubejs initialization failed', e);
+			if (!Cube) {
+				throw new Error('Could not find Cube class in cubejs module');
+			}
+
+			// Initialize solver if not already initialized (this is a static method)
+			if (typeof Cube.initSolver === 'function' && !solverInitializedRef.current) {
+				console.log('Initializing cubejs solver (this may take 4-5 seconds)...');
+				setSolutionStr('Initializing solver...');
+				await Cube.initSolver();
+				solverInitializedRef.current = true;
+				console.log('Solver initialized successfully');
 			}
 
 			const stateStr = cubeStateToCubejsString(cubeState);
-			let solution: string | null = null;
-			// Try multiple calling patterns to support different cubejs builds
-			try {
-				if (cubejs && typeof cubejs.solve === 'function') {
-					solution = cubejs.solve(stateStr);
-				} else if (cubejs && cubejs.default && typeof cubejs.default.solve === 'function') {
-					solution = cubejs.default.solve(stateStr);
-				} else if (typeof cubejs === 'function') {
-					// could be a function or a class
-					try {
-						const maybe = (cubejs as any)(stateStr);
-						if (typeof maybe === 'string') solution = maybe;
-					} catch (err: any) {
-						// if it's a class constructor, try new
-						if (/class constructors must be invoked with 'new'/.test(String(err.message))) {
-							const inst = new (cubejs as any)();
-							if (typeof inst.solve === 'function') {
-								solution = inst.solve(stateStr);
-							} else if (typeof inst === 'function') {
-								solution = inst(stateStr);
-							}
-						} else {
-							throw err;
-						}
-					}
-				} else if (cubejs && typeof cubejs === 'object') {
-					// try common named exports
-					const candidates = ['Cube', 'Solver', 'CubeJS'];
-					for (const c of candidates) {
-						const ctor = (cubejs as any)[c];
-						if (typeof ctor === 'function') {
-							try {
-								const inst = new ctor();
-								if (typeof inst.solve === 'function') {
-									solution = inst.solve(stateStr);
-									break;
-								}
-							} catch (e) {
-								// ignore and continue
-							}
-						}
-					}
-				}
-			} catch (err) {
-				console.error('Solver invocation failed shape test:', err, { cubejs });
-				throw err;
+			console.log('Solving cube with state string:', stateStr);
+			console.log('Cube state object:', cubeState);
+			
+			// Verify the state string is valid
+			if (stateStr.length !== 54) {
+				throw new Error(`Invalid state string length: ${stateStr.length}, expected 54`);
 			}
-			setSolutionStr(solution || '');
-			setMoves((solution || '').split(/\s+/).filter(Boolean));
+			
+			setSolutionStr('Solving...');
+			
+			// Create cube from string and solve it
+			let cube;
+			try {
+				cube = Cube.fromString(stateStr);
+				console.log('Cube created successfully from string');
+				
+				// Verify the cube is valid by checking if it's already solved
+				const isSolved = cube.isSolved();
+				console.log('Cube is already solved:', isSolved);
+				
+				if (isSolved) {
+					setSolutionStr('Cube is already solved!');
+					setMoves([]);
+					return;
+				}
+			} catch (e) {
+				console.error('Error creating cube from string:', e);
+				console.error('State string was:', stateStr);
+				throw new Error(`Failed to create cube from state string: ${e instanceof Error ? e.message : String(e)}`);
+			}
+			
+			let solution;
+			try {
+				console.log('Calling cube.solve()...');
+				solution = cube.solve();
+				console.log('Solution found:', solution);
+				
+				if (!solution) {
+					console.warn('Solver returned null/undefined');
+					setSolutionStr('No solution found - cube may be unsolvable');
+					setMoves([]);
+					return;
+				}
+				
+				if (typeof solution !== 'string') {
+					console.warn('Solver returned non-string:', solution);
+					setSolutionStr('Invalid solution format');
+					setMoves([]);
+					return;
+				}
+				
+				const trimmed = solution.trim();
+				if (trimmed === '') {
+					console.warn('Solver returned empty string');
+					setSolutionStr('No solution found - cube may be unsolvable');
+					setMoves([]);
+					return;
+				}
+				
+				setSolutionStr(trimmed);
+				const moveArray = trimmed.split(/\s+/).filter(Boolean);
+				setMoves(moveArray);
+				console.log('Moves array:', moveArray, 'Total moves:', moveArray.length);
+				
+				if (moveArray.length === 0) {
+					console.warn('No moves in solution');
+					setSolutionStr('Solution contains no moves');
+				}
+			} catch (e) {
+				console.error('Error solving cube:', e);
+				console.error('Stack:', e instanceof Error ? e.stack : 'No stack');
+				throw new Error(`Failed to solve cube: ${e instanceof Error ? e.message : String(e)}`);
+			}
 		} catch (e) {
 			console.error('Solver error', e);
-			setSolutionStr('Error computing solution (is cubejs installed?)');
+			setSolutionStr(`Error computing solution: ${e instanceof Error ? e.message : String(e)}`);
+			setMoves([]);
 		}
-	}
+	}, [cubeState]);
+
+	// Auto-solve effect - must be after function definitions
+	useEffect(() => {
+		// Only auto-solve if:
+		// 1. Cube is complete
+		// 2. We haven't already auto-solved for this cube state
+		// 3. We're not currently solving
+		// 4. There's no existing solution
+		if (isCubeComplete() && !hasAutoSolvedRef.current && !autoSolving && moves.length === 0 && !solutionStr) {
+			setAutoSolving(true);
+			hasAutoSolvedRef.current = true;
+			// Small delay to let UI update
+			setTimeout(() => {
+				handleSolveClick().finally(() => {
+					setAutoSolving(false);
+				});
+			}, 500);
+		}
+		// Reset auto-solve flag if cube state changes significantly (user resets or edits)
+		const placeholderCount = Object.values(cubeState).flat().flat().filter(c => c === '#CCCCCC').length;
+		if (placeholderCount > 0 && hasAutoSolvedRef.current) {
+			// Cube has been reset or edited, allow auto-solve again
+			hasAutoSolvedRef.current = false;
+		}
+	}, [cubeState, autoSolving, moves.length, solutionStr, isCubeComplete, handleSolveClick]);
 
 	function handleMouseDown(e: React.MouseEvent) {
 		setMouseDown(true);
@@ -988,35 +1105,82 @@ export default function CameraPage() {
 			top: createFace(DEFAULT_CENTERS.top),
 			bottom: createFace(DEFAULT_CENTERS.bottom),
 		});
+		// Reset auto-solve flag when cube is reset
+		hasAutoSolvedRef.current = false;
+		setSolutionStr('');
+		setMoves([]);
+	}
+
+	async function handleScrambleClick() {
+		try {
+			// Import cubejs
+			const cubejsModule: any = await import('cubejs');
+			const Cube = cubejsModule?.default || cubejsModule?.Cube || cubejsModule;
+
+			if (!Cube) {
+				throw new Error('Could not find Cube class in cubejs module');
+			}
+
+			// Initialize solver if needed
+			if (typeof Cube.initSolver === 'function' && !solverInitializedRef.current) {
+				console.log('Initializing cubejs solver for scrambling...');
+				Cube.initSolver();
+				solverInitializedRef.current = true;
+			}
+
+			// Create a random cube
+			const randomCube = Cube.random();
+			
+			// Get the facelet string representation
+			const faceletString = randomCube.asString();
+			
+			if (!faceletString || faceletString.length !== 54) {
+				throw new Error(`Invalid facelet string length: ${faceletString?.length || 0}, expected 54`);
+			}
+			
+			// Use the converter function to properly handle face orientations
+			const { cubejsStringToCubeState } = await import('@/lib/cubeAdapter');
+			const newCubeState = cubejsStringToCubeState(faceletString);
+
+			setCubeState(newCubeState);
+			// Reset auto-solve flag so it can auto-solve the scrambled cube
+			hasAutoSolvedRef.current = false;
+			setSolutionStr('');
+			setMoves([]);
+		} catch (e) {
+			console.error('Scramble error', e);
+			alert(`Error scrambling cube: ${e instanceof Error ? e.message : String(e)}`);
+		}
 	}
 
 	return (
-		<div className="flex font-sans flex-col w-screen h-full items-center font-io-regular bg-contain justify-items-center min-h-screen p-8 pb-20 gap-10 bg-gradient-to-br from-amber-100 via-orange-100 to-yellow-100 px-4">
+		<div className="flex font-sans flex-col w-screen h-full items-center font-io-regular bg-contain justify-items-center min-h-screen p-6 pb-20 gap-6 bg-gradient-to-br from-amber-50 via-orange-50 to-yellow-50">
 			<div className="fixed top-4 left-4 z-50">
 				<a href="/" title="Go to Home">
 					<Image
 						src={Icon}
 						alt="ARC Solver Icon"
-						width={100}
-						height={100}
-						className="rounded-full border-2 border-black shadow-lg"
+						width={80}
+						height={80}
+						className="rounded-full border-3 border-amber-800 shadow-2xl bg-amber-100/80"
 						priority
 					/>
 				</a>
 			</div>
-			{/* scaled container */}
-			<div style={{ width: designWidth + 'px', transform: `scale(${scale})`, transformOrigin: 'top center' }}>
 
-			<div className="flex flex-col gap-5 row-start-2 items-center w-fit bg-emerald-600 border-10 border-y-emerald-700 border-x-emerald-500 px-8 py-5 rounded-2xl shadow-lg mx-auto mb-10">
-				<h1 className="mx-auto text-center text-6xl">Rubik's Cube Scanner</h1>
-				{loading && <p className='mx-auto'>Requesting camera access...</p>}
-				{error && <p style={{ color: 'red' }}>Error: {error}</p>}
+			{/* Header */}
+			<div className="flex flex-col gap-3 items-center w-full mt-4 mb-4">
+				<h1 className="text-5xl font-bold text-amber-900 drop-shadow-md" style={{ fontFamily: 'serif', textShadow: '2px 2px 4px rgba(0,0,0,0.1)' }}>Rubik's Cube Solver</h1>
+				{loading && <p className='text-amber-800 text-lg font-medium'>Requesting camera access...</p>}
+				{error && <p className="text-red-700 text-lg font-semibold">Error: {error}</p>}
 			</div>
 
-			<div className="flex flex-row lg:flex-row justify-center items-start gap-8">
-				<div className="flex flex-col gap-5 flex-wrap items-center bg-emerald-600 border-10 border-y-emerald-700 border-x-emerald-500 p-4 rounded-lg shadow-lg">
-					<h2 className="text-4xl">Camera Feed</h2>
-					<div className="relative border-4 border-y-emerald-700 border-x-emerald-500 rounded-lg w-[500px] h-[500px]">
+			{/* Main content: Camera, Cube Net, and 3D Preview side by side */}
+			<div className="flex flex-row justify-center items-start gap-6 w-full max-w-[1800px] px-4">
+				{/* Camera Feed */}
+				<div className="flex flex-col gap-4 items-center bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
+					<h2 className="text-2xl font-bold text-amber-900" style={{ fontFamily: 'serif' }}>Camera Feed</h2>
+					<div className="relative border-4 border-amber-800/50 rounded-xl w-[400px] h-[400px] overflow-hidden shadow-lg">
 						<video
 							ref={videoRef}
 							autoPlay
@@ -1029,72 +1193,54 @@ export default function CameraPage() {
 						/>
 
 					</div>
-					<div className="flex flex-col gap-3 items-center">
-						<div className="text-xl">Face will be detected automatically when saving</div>
+					<div className="flex flex-col gap-3 items-center w-full">
+						<div className="text-sm text-amber-900/80 text-center font-medium">Face detected automatically when saving</div>
 						{/* Live detected face badge */}
-						<div className="mt-2">
-							{liveDetectedFace ? (
-								<div className="flex items-center gap-2 bg-white/10 text-white px-3 py-1 rounded">
-									<div className="w-5 h-5 rounded-sm" style={{ backgroundColor: DEFAULT_CENTERS[liveDetectedFace] }} />
-									<div className="text-sm">Detected: <strong className="uppercase">{liveDetectedFace}</strong></div>
-									<div className="text-xs opacity-80">{liveDetectedDist !== null ? `ΔE ${liveDetectedDist.toFixed(2)}` : ''}</div>
-									{liveDetectedDist !== null && liveDetectedDist > 10 && (
-										<div className="ml-2 text-xs text-yellow-300">Low confidence</div>
-									)}
-								</div>
-							) : (
-								<div className="text-sm text-white/70">Detecting face...</div>
-							)}
-						</div>
+						{liveDetectedFace && (
+							<div className="flex items-center gap-2 bg-amber-200/80 border-2 border-amber-700/40 text-amber-900 px-4 py-2 rounded-lg shadow-md">
+								<div className="w-4 h-4 rounded-sm shadow-sm border border-amber-800/30" style={{ backgroundColor: DEFAULT_CENTERS[liveDetectedFace] }} />
+								<div className="text-sm font-bold">Detected: <span className="uppercase">{liveDetectedFace}</span></div>
+								{liveDetectedDist !== null && (
+									<div className="text-xs opacity-80 ml-2">ΔE {liveDetectedDist.toFixed(1)}</div>
+								)}
+							</div>
+						)}
 					</div>
-					<div className="flex justify-center gap-5">
+					<div className="flex justify-center gap-3 w-full">
 						{scanningButton === "Start Scanning" ? (
 							<button
 								onClick={handleStartClick}
-								className="cursor-pointer w-35 p-2 rounded bg-emerald-600 border-5 border-y-emerald-700 border-x-emerald-500 text-white"
+								className="cursor-pointer px-6 py-2.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold shadow-lg transition-all duration-200 transform hover:scale-105 border-2 border-amber-900/40"
 							>
 								Start Scanning
 							</button>
 						) : (
-							<button
-								onClick={handleStopClick}
-								className="cursor-pointer w-35 p-2 rounded bg-emerald-600 border-5 border-y-emerald-700 border-x-emerald-500 text-white"
-							>
-								Stop Scanning
-							</button>
-						)}
-						{scanningButton === "Stop Scanning" && (
-							<button
-								onClick={handleSaveClick}
-								className="cursor-pointer w-35 p-2 rounded bg-emerald-600 border-5 border-y-emerald-700 border-x-emerald-500 text-white"
-							>
-								Save Scan
-							</button>
+							<>
+								<button
+									onClick={handleStopClick}
+									className="cursor-pointer px-6 py-2.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-bold shadow-lg transition-all duration-200 transform hover:scale-105 border-2 border-red-900/40"
+								>
+									Stop
+								</button>
+								<button
+									onClick={handleSaveClick}
+									className="cursor-pointer px-6 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-lg transition-all duration-200 transform hover:scale-105 border-2 border-amber-800/40"
+								>
+									Save Scan
+								</button>
+							</>
 						)}
 					</div>
 				</div>
 
-				<div className="flex flex-col items-center bg-emerald-600 border-10 border-y-emerald-700 border-x-emerald-500 p-4 gap-4 rounded-lg min-w-fit shadow-lg">
-					<h2 className="text-4xl">Current Scan</h2>
-					<div className="grid grid-cols-3 gap-2 p-2 min-w-fit border-4 border-y-emerald-700 border-x-emerald-500 bg-white rounded-lg">
-						{gridColors.map((row, rowIndex) =>
-							row.map((color, colIndex) => (
-								<div
-									key={`${rowIndex}-${colIndex}`}
-									style={{ backgroundColor: color }}
-									className="w-16 h-16 border-2 border-black-500 rounded-lg"
-									title={color}
-								/>
-							))
-						)}
-					</div>
-
-					<h2 className='text-4xl mt-4'>Cube Net</h2>
-					<div className='w-fit h-fit bg-gray-800 border-4 border-y-emerald-700 border-x-emerald-500 rounded-lg p-6'>
+				{/* Cube Net */}
+				<div className="flex flex-col items-center bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl min-w-fit" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
+					<h2 className='text-2xl font-bold text-amber-900 mb-4' style={{ fontFamily: 'serif' }}>Cube Net</h2>
+					<div className='w-fit h-fit bg-amber-200/60 border-3 border-amber-800/50 rounded-xl p-6 shadow-inner'>
 						<div className="flex flex-col items-center gap-2">
 							<div className="flex items-center gap-4 mb-2">
-								<h3 className="text-lg text-white">Cube Net</h3>
-								<button onClick={() => setManualEdit(m => !m)} className={`text-sm px-2 py-1 rounded ${manualEdit ? 'bg-emerald-500 text-white' : 'bg-white/10 text-white'}`}>
+								<h3 className="text-lg text-amber-900 font-bold">Cube Net</h3>
+								<button onClick={() => setManualEdit(m => !m)} className={`text-sm px-3 py-1.5 rounded-lg font-semibold border-2 ${manualEdit ? 'bg-amber-700 text-white border-amber-900/40' : 'bg-amber-300/60 text-amber-900 border-amber-700/40'}`}>
 									{manualEdit ? 'Manual Edit: ON' : 'Manual Edit: OFF'}
 								</button>
 							</div>
@@ -1216,65 +1362,94 @@ export default function CameraPage() {
 							</div>
 						</div>
 					</div>
+				</div>
 
-					<h2 className='text-4xl mt-4'>3D Preview</h2>
-							<div className="flex items-start gap-4">
-								<canvas
-									ref={cubeCanvasRef}
-									width={400}
-									height={400}
-									className="border-4 border-y-emerald-700 border-x-emerald-500 bg-gray-100 rounded-lg cursor-move"
-									onMouseDown={handleMouseDown}
-									onMouseMove={handleMouseMove}
-									onMouseUp={handleMouseUp}
-									onMouseLeave={handleMouseUp}
-								/>
-
-								{/* view buttons removed - cube orientation controlled by drag */}
-							</div>
-					<p className="text-sm text-center">Drag to rotate</p>
-
-					<button
-						onClick={resetCube}
-						className="cursor-pointer p-2 rounded bg-red-600 border-5 border-y-red-700 border-x-red-500 text-white mt-2"
-					>
-						Reset Cube
-					</button>
-
-					<div className="flex gap-2 mt-3 items-center">
-						<button onClick={handleSolveClick} className="px-3 py-1 rounded bg-blue-600 text-white">Solve</button>
-						{solutionStr && <div className="text-sm ml-2">{solutionStr}</div>}
+				{/* 3D Preview */}
+				<div className="flex flex-col items-center bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
+					<h2 className='text-2xl font-bold text-amber-900 mb-4' style={{ fontFamily: 'serif' }}>3D Preview</h2>
+					<div className="flex flex-col items-center gap-4">
+						<canvas
+							ref={cubeCanvasRef}
+							width={400}
+							height={400}
+							className="border-4 border-amber-800/50 bg-amber-50 rounded-xl cursor-move shadow-lg"
+							onMouseDown={handleMouseDown}
+							onMouseMove={handleMouseMove}
+							onMouseUp={handleMouseUp}
+							onMouseLeave={handleMouseUp}
+						/>
+						<p className="text-sm text-amber-900/70 font-medium">Drag to rotate</p>
 					</div>
 
-					<div className="mt-2">
-						<button className="text-sm underline" onClick={() => setDebugVisible(v => !v)}>{debugVisible ? 'Hide' : 'Show'} debug state</button>
+					<div className="flex flex-col gap-3 mt-4 w-full">
+						<div className="flex gap-2 justify-center">
+							<button
+								onClick={resetCube}
+								className="cursor-pointer px-5 py-2 rounded-lg bg-red-700 hover:bg-red-800 text-white font-bold shadow-lg transition-all duration-200 transform hover:scale-105 border-2 border-red-900/40"
+							>
+								Reset
+							</button>
+							<button
+								onClick={handleScrambleClick}
+								className="cursor-pointer px-5 py-2 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold shadow-lg transition-all duration-200 transform hover:scale-105 border-2 border-amber-900/40"
+							>
+								Scramble
+							</button>
+						</div>
+
+						<div className="flex gap-2 items-center justify-center">
+							<button 
+								onClick={handleSolveClick} 
+								className="px-6 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-lg transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed border-2 border-amber-800/40" 
+								disabled={autoSolving}
+							>
+								{autoSolving ? 'Solving...' : 'Solve'}
+							</button>
+							{autoSolving && <div className="text-sm text-amber-800 font-bold">Auto-solving...</div>}
+							{solutionStr && !autoSolving && <div className="text-sm text-amber-900 max-w-xs truncate font-medium">{solutionStr}</div>}
+						</div>
+					</div>
+
+					<div className="mt-3">
+						<button 
+							className="text-xs text-amber-800 hover:text-amber-900 underline transition-colors font-medium" 
+							onClick={() => setDebugVisible(v => !v)}
+						>
+							{debugVisible ? 'Hide' : 'Show'} debug
+						</button>
 						{debugVisible && (
-							<div className="mt-2 bg-gray-900 text-white p-3 rounded">
-								<div className="mb-2 text-xs opacity-80">Generated cube state string (54 chars) — copy for debugging:</div>
-								<div className="mb-2 flex gap-2 items-center">
-									<span className="text-xs opacity-80">Color mapping:</span>
-									<button className={`text-xs px-2 py-1 rounded ${colorMode==='lab' ? 'bg-emerald-500 text-white' : 'bg-white/10'}`} onClick={() => { setColorMode('lab'); readVideoFeed(); }}>Lab (recommended)</button>
-									<button className={`text-xs px-2 py-1 rounded ${colorMode==='rgb' ? 'bg-emerald-500 text-white' : 'bg-white/10'}`} onClick={() => { setColorMode('rgb'); readVideoFeed(); }}>RGB (fallback)</button>
+							<div className="mt-3 bg-amber-200/80 border-2 border-amber-800/40 text-amber-900 p-4 rounded-xl shadow-inner">
+								<div className="mb-2 text-xs font-semibold text-amber-900">Cube state string (54 chars):</div>
+								<div className="mb-3 flex gap-2 items-center">
+									<span className="text-xs font-medium text-amber-900">Color mode:</span>
+									<button className={`text-xs px-3 py-1 rounded-lg transition-colors font-semibold border ${colorMode==='lab' ? 'bg-amber-700 text-white border-amber-900/40' : 'bg-amber-300/60 text-amber-900 border-amber-700/40 hover:bg-amber-400/60'}`} onClick={() => { setColorMode('lab'); readVideoFeed(); }}>Lab</button>
+									<button className={`text-xs px-3 py-1 rounded-lg transition-colors font-semibold border ${colorMode==='rgb' ? 'bg-amber-700 text-white border-amber-900/40' : 'bg-amber-300/60 text-amber-900 border-amber-700/40 hover:bg-amber-400/60'}`} onClick={() => { setColorMode('rgb'); readVideoFeed(); }}>RGB</button>
 								</div>
-								<textarea readOnly value={debugStateStr} className="w-full h-24 text-sm p-2 bg-black/50" />
-								<div className="mt-2 text-sm">Per-face counts:</div>
-								<div className="flex gap-3 mt-1 text-xs">
+								<textarea readOnly value={debugStateStr} className="w-full h-20 text-xs p-2 bg-amber-50 rounded border-2 border-amber-800/30 font-mono text-amber-900" />
+								<div className="mt-2 text-xs font-semibold text-amber-900">Face counts:</div>
+								<div className="flex gap-2 mt-1 text-xs">
 									{['U','R','F','D','L','B'].map(k => (
-										<div key={k} className="px-2 py-1 bg-white/5 rounded">{k}: {debugCounts[k] || 0}</div>
+										<div key={k} className="px-2 py-1 bg-amber-300/60 rounded border border-amber-700/40 text-amber-900 font-semibold">{k}: {debugCounts[k] || 0}</div>
 									))}
 								</div>
 							</div>
 						)}
 					</div>
-
-					{moves.length > 0 && (
-						<div className="w-full mt-4">
-							<SolverAnimator moves={moves} />
-						</div>
-					)}
 				</div>
 			</div>
-			</div>
+
+			{/* Solver Animation at Bottom */}
+			{moves.length > 0 && (
+				<div className="w-full max-w-[1800px] mt-6 px-4">
+					<div className="bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
+						<h2 className="text-2xl font-bold text-amber-900 mb-4 text-center" style={{ fontFamily: 'serif' }}>Solution Steps</h2>
+						<SolverAnimator 
+							moves={moves} 
+							cubeState={cubeState}
+						/>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
