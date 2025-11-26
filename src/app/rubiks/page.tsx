@@ -7,7 +7,7 @@ import useScaleToViewport from '@/hooks/useScaleToViewport';
 import { cubeStateToCubejsString } from '@/lib/cubeAdapter';
 import dynamic from 'next/dynamic';
 import SolverAnimator from '@/components/SolverAnimator';
-import Icon from '../../../images/ARC Solver PNG.png';
+import Icon from '../../../images/Untitled_Artwor no white borderk.png';
 import Image from 'next/image';
 
 type CubeFace = string[][];
@@ -1155,16 +1155,19 @@ export default function CameraPage() {
 
 	return (
 		<div className="flex font-sans flex-col w-screen h-full items-center font-io-regular bg-contain justify-items-center min-h-screen p-6 pb-20 gap-6 bg-gradient-to-br from-amber-50 via-orange-50 to-yellow-50">
+			{/* Persistent Icon (top-left corner) */}
 			<div className="fixed top-4 left-4 z-50">
 				<a href="/" title="Go to Home">
-					<Image
+					<div className="rounded-full pb-2 border-3 border-amber-800 shadow-2xl w-25 h-25 bg-amber-100/80 flex items-center justify-center">
+						<Image
 						src={Icon}
 						alt="ARC Solver Icon"
 						width={80}
 						height={80}
-						className="rounded-full border-3 border-amber-800 shadow-2xl bg-amber-100/80"
+						className=""
 						priority
 					/>
+					</div>
 				</a>
 			</div>
 
