@@ -1439,9 +1439,9 @@ export default function CameraPage() {
 
 			{/* Solver Animation at Bottom */}
 			{moves.length > 0 && (
-				<div className="w-full max-w-[1800px] mt-6 px-4">
+				<div className="w-[50%] max-w-[1800px] mt-6 px-4">
 					<div className="bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
-						<h2 className="text-2xl font-bold text-amber-900 mb-4 text-center" style={{ fontFamily: 'serif' }}>Solution Steps</h2>
+						<h2 className="text-2xl font-bold text-amber-900 mb-4 text-center">Solution Steps</h2>
 						<SolverAnimator 
 							moves={moves} 
 							cubeState={cubeState}

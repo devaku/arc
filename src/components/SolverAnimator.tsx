@@ -599,7 +599,6 @@ export default function SolverAnimator({ moves, cubeState, onStateChange }: Prop
     <div className="w-full">
       {/* 3D Cube Visualization with Arrows */}
       <div className="mb-6 p-4 bg-amber-100/80 border-2 border-amber-300/30 rounded-lg">
-        <h3 className="text-lg font-bold text-amber-900 mb-3 text-center">Cube View</h3>
         <CubeVisualization cubeState={displayState} currentMove={currentMove} />
       </div>
 
