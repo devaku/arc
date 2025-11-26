@@ -1170,7 +1170,7 @@ export default function CameraPage() {
 
 			{/* Header */}
 			<div className="flex flex-col gap-3 items-center w-full mt-4 mb-4">
-				<h1 className="text-5xl font-bold text-amber-900 drop-shadow-md" style={{ fontFamily: 'serif', textShadow: '2px 2px 4px rgba(0,0,0,0.1)' }}>Rubik's Cube Solver</h1>
+				<h1 className="text-5xl font-bold text-amber-900 drop-shadow-md">Rubik's Cube Solver</h1>
 				{loading && <p className='text-amber-800 text-lg font-medium'>Requesting camera access...</p>}
 				{error && <p className="text-red-700 text-lg font-semibold">Error: {error}</p>}
 			</div>
@@ -1179,7 +1179,7 @@ export default function CameraPage() {
 			<div className="flex flex-row justify-center items-start gap-6 w-full max-w-[1800px] px-4">
 				{/* Camera Feed */}
 				<div className="flex flex-col gap-4 items-center bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
-					<h2 className="text-2xl font-bold text-amber-900" style={{ fontFamily: 'serif' }}>Camera Feed</h2>
+					<h2 className="text-2xl font-bold text-amber-900">Camera Feed</h2>
 					<div className="relative border-4 border-amber-800/50 rounded-xl w-[400px] h-[400px] overflow-hidden shadow-lg">
 						<video
 							ref={videoRef}
@@ -1235,11 +1235,10 @@ export default function CameraPage() {
 
 				{/* Cube Net */}
 				<div className="flex flex-col items-center bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl min-w-fit" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
-					<h2 className='text-2xl font-bold text-amber-900 mb-4' style={{ fontFamily: 'serif' }}>Cube Net</h2>
+					<h2 className='text-2xl font-bold text-amber-900 mb-4'>Cube Net</h2>
 					<div className='w-fit h-fit bg-amber-200/60 border-3 border-amber-800/50 rounded-xl p-6 shadow-inner'>
 						<div className="flex flex-col items-center gap-2">
 							<div className="flex items-center gap-4 mb-2">
-								<h3 className="text-lg text-amber-900 font-bold">Cube Net</h3>
 								<button onClick={() => setManualEdit(m => !m)} className={`text-sm px-3 py-1.5 rounded-lg font-semibold border-2 ${manualEdit ? 'bg-amber-700 text-white border-amber-900/40' : 'bg-amber-300/60 text-amber-900 border-amber-700/40'}`}>
 									{manualEdit ? 'Manual Edit: ON' : 'Manual Edit: OFF'}
 								</button>
@@ -1248,7 +1247,7 @@ export default function CameraPage() {
 							<div className="grid grid-cols-3 gap-4">
 								{/* Top */}
 								<div className="flex flex-col items-center">
-									<h4 className="text-sm text-white mb-2">Top</h4>
+									<h4 className="text-sm text-amber-900 mb-2">Top</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
 										{cubeState.top.map((row, rowIndex) => row.map((color, colIndex) => {
 											const isCenter = rowIndex === 1 && colIndex === 1;
@@ -1267,7 +1266,7 @@ export default function CameraPage() {
 
 								{/* Front */}
 								<div className="flex flex-col items-center">
-									<h4 className="text-sm text-white mb-2">Front</h4>
+									<h4 className="text-sm text-amber-900 mb-2">Front</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
 										{cubeState.front.map((row, rowIndex) => row.map((color, colIndex) => {
 											const isCenter = rowIndex === 1 && colIndex === 1;
@@ -1286,7 +1285,7 @@ export default function CameraPage() {
 
 								{/* Right */}
 								<div className="flex flex-col items-center">
-									<h4 className="text-sm text-white mb-2">Right</h4>
+									<h4 className="text-sm text-amber-900 mb-2">Right</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
 										{cubeState.right.map((row, rowIndex) => row.map((color, colIndex) => {
 											const isCenter = rowIndex === 1 && colIndex === 1;
@@ -1305,7 +1304,7 @@ export default function CameraPage() {
 
 								{/* Left */}
 								<div className="flex flex-col items-center">
-									<h4 className="text-sm text-white mb-2">Left</h4>
+									<h4 className="text-sm text-amber-900 mb-2">Left</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
 										{cubeState.left.map((row, rowIndex) => row.map((color, colIndex) => {
 											const isCenter = rowIndex === 1 && colIndex === 1;
@@ -1324,7 +1323,7 @@ export default function CameraPage() {
 
 								{/* Back */}
 								<div className="flex flex-col items-center">
-									<h4 className="text-sm text-white mb-2">Back</h4>
+									<h4 className="text-sm text-amber-900 mb-2">Back</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
 										{cubeState.back.map((row, rowIndex) => row.map((color, colIndex) => {
 											const isCenter = rowIndex === 1 && colIndex === 1;
@@ -1343,7 +1342,7 @@ export default function CameraPage() {
 
 								{/* Bottom */}
 								<div className="flex flex-col items-center">
-									<h4 className="text-sm text-white mb-2">Bottom</h4>
+									<h4 className="text-sm text-amber-900 mb-2">Bottom</h4>
 									<div className="grid grid-cols-3 gap-1 bg-black p-2 rounded">
 										{cubeState.bottom.map((row, rowIndex) => row.map((color, colIndex) => {
 											const isCenter = rowIndex === 1 && colIndex === 1;
@@ -1366,7 +1365,7 @@ export default function CameraPage() {
 
 				{/* 3D Preview */}
 				<div className="flex flex-col items-center bg-gradient-to-br from-amber-100 to-orange-100 border-4 border-amber-800/40 p-6 rounded-2xl shadow-xl" style={{ boxShadow: '0 8px 16px rgba(0,0,0,0.15)' }}>
-					<h2 className='text-2xl font-bold text-amber-900 mb-4' style={{ fontFamily: 'serif' }}>3D Preview</h2>
+					<h2 className='text-2xl font-bold text-amber-900 mb-4'>3D Preview</h2>
 					<div className="flex flex-col items-center gap-4">
 						<canvas
 							ref={cubeCanvasRef}
